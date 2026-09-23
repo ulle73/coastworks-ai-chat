@@ -95,6 +95,72 @@ def blocked(html: str):
     )
 
 
+COUNTRY_LANGUAGE = {
+    "se": "sv",
+    "no": "nb",
+    "dk": "da",
+    "fi": "fi",
+    "de": "de",
+    "fr": "fr",
+    "nl": "nl",
+    "es": "es",
+    "pt": "pt",
+    "it": "it",
+    "pl": "pl",
+    "gb": "en",
+    "uk": "en",
+}
+
+
+def preferred_locale_url(html: str, current_url: str, submitted_host: str):
+    """Choose an hreflang alternate matching the submitted ccTLD, if available."""
+    labels = (submitted_host or "").lower().rstrip(".").split(".")
+    cc = labels[-1] if labels and len(labels[-1]) == 2 else None
+    if not cc:
+        return None
+
+    wanted_language = COUNTRY_LANGUAGE.get(cc)
+    soup = BeautifulSoup(html, "html.parser")
+    candidates = []
+    for link in soup.select('link[rel~="alternate"][hreflang][href]'):
+        hreflang = str(link.get("hreflang") or "").strip().lower().replace("_", "-")
+        if not hreflang or hreflang == "x-default":
+            continue
+        parts = hreflang.split("-")
+        language = parts[0]
+        region = parts[-1] if len(parts) > 1 and len(parts[-1]) == 2 else None
+        score = 0
+        if region == cc:
+            score = 3
+        elif wanted_language and language == wanted_language:
+            score = 2
+        elif language == cc:
+            score = 1
+        if not score:
+            continue
+        try:
+            target = normalize_url(urljoin(current_url, str(link.get("href") or "")))
+        except ValueError:
+            continue
+        if origin(target) == origin(current_url):
+            candidates.append((score, target))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def locale_path_scope(url: str):
+    path_parts = [part for part in urlsplit(url).path.split("/") if part]
+    if not path_parts:
+        return None
+    first = path_parts[0].lower()
+    if re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", first):
+        return "/" + first
+    return None
+
+
 def page_priority(candidate: str):
     path = urlsplit(candidate).path.lower()
     info_hint = bool(
@@ -380,6 +446,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
 
     supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
+    submitted_host = urlsplit(start_url).hostname or ""
     root = origin(start_url)
 
     # Check robots on the submitted origin first. A legacy domain may itself
@@ -403,7 +470,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
     # Resolve the actual entrypoint. If a legacy/marketing domain redirects to a
     # different canonical HTTPS origin (e.g. dormy.se -> dormy.com), rebase the
     # crawl there and fetch that origin's robots before crawling any content.
-    entry_status, _, canonical_start = await fetcher.get(
+    entry_status, entry_html, canonical_start = await fetcher.get(
         start_url,
         allowed_origin=root,
         canonical_redirect=True,
@@ -411,6 +478,15 @@ async def crawl(start_url, fetcher=None, renderer=None):
     if entry_status >= 400:
         raise CrawlFailure(f"HTTP_{entry_status}")
     canonical_start = normalize_url(canonical_start)
+    locale_target = preferred_locale_url(entry_html, canonical_start, submitted_host)
+    if locale_target:
+        log.info(
+            "locale_rebased submitted_host=%s from=%s to=%s",
+            submitted_host,
+            canonical_start,
+            locale_target,
+        )
+        canonical_start = locale_target
     canonical_root = origin(canonical_start)
     if canonical_root != root:
         root = canonical_root
@@ -428,6 +504,14 @@ async def crawl(start_url, fetcher=None, renderer=None):
     else:
         start_url = canonical_start
 
+    locale_scope = locale_path_scope(start_url) if locale_target else None
+
+    def in_locale_scope(candidate: str):
+        if not locale_scope:
+            return True
+        path = urlsplit(candidate).path
+        return path == locale_scope or path.startswith(locale_scope + "/")
+
     robots_delay = float(robots.crawl_delay(USER_AGENT) or 0)
     if robots_delay > 5:
         raise CrawlFailure("SITE_REQUIRES_SLOW_CRAWL")
@@ -444,6 +528,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
         max_sitemaps=24,
         max_urls=max(500, settings.CRAWL_PAGES * 10),
     )
+    sitemap_candidates = [url for url in sitemap_candidates if in_locale_scope(url)]
 
     result = CrawlResult()
     hashes = set()
@@ -525,6 +610,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 clean
                 for link in links
                 if (clean := clean_internal_url(link, root)) is not None
+                and in_locale_scope(clean)
             ]
             return {
                 "url": url,
@@ -548,7 +634,10 @@ async def crawl(start_url, fetcher=None, renderer=None):
     if not home:
         raise CrawlFailure("INSUFFICIENT_CONTENT")
 
-    core_urls = navigation_links(home["html"], home["final"], root)
+    core_urls = [
+        url for url in navigation_links(home["html"], home["final"], root)
+        if in_locale_scope(url)
+    ]
     result.core_total = len(core_urls)
 
     # Queue ordering matters: navigation first, then footer/info pages, then sitemap.
@@ -563,7 +652,10 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 frontier.append(candidate)
 
     enqueue_many(core_urls)
-    enqueue_many(footer_links(home["html"], home["final"], root))
+    enqueue_many(
+        url for url in footer_links(home["html"], home["final"], root)
+        if in_locale_scope(url)
+    )
     enqueue_many(sorted(sitemap_candidates, key=page_priority))
     enqueue_many(sorted(home["links"], key=page_priority))
 
