@@ -186,7 +186,7 @@ async def ready():
     return {"status": "ok"}
 
 
-@app.get("/health/crawl-check")
+@app.get("/api/debug/crawl-check")
 async def crawl_check():
     """Temporary development diagnostic for validating the production crawler."""
     if settings.ENVIRONMENT != "development":
