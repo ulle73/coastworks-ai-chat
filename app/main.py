@@ -317,7 +317,7 @@ async def installation(bot_id: uuid.UUID, request: Request):
         bot = await load_bot(db, bot_id)
         require_owner(request, bot)
     return {
-        "code": f'<script src="{settings.APP_ORIGIN}/widget.js" data-bot="{bot_id}" data-install="{bot["install_nonce"]}" defer></script>',
+        "code": f'<script src="{settings.PUBLIC_API_ORIGIN or settings.APP_ORIGIN}/widget.js" data-bot="{bot_id}" data-install="{bot["install_nonce"]}" defer></script>',
         "published": bot["published"],
     }
 
@@ -336,7 +336,7 @@ async def publish(bot_id: uuid.UUID, request: Request):
         found = soup.find(
             "script",
             attrs={
-                "src": settings.APP_ORIGIN + "/widget.js",
+                "src": (settings.PUBLIC_API_ORIGIN or settings.APP_ORIGIN) + "/widget.js",
                 "data-bot": str(bot_id),
                 "data-install": bot["install_nonce"],
             },
