@@ -40,10 +40,21 @@ async def _crawl_self_test():
 
     try:
         result = await crawl("https://golfkuponger.se/")
+        pages = {page.get("url"): page for page in result.pages}
+        company = pages.get("https://golfkuponger.se/pages/foretagsbestallning", {})
+        company_text = (company.get("content") or "").lower()
+        contact_present = "https://golfkuponger.se/pages/kontakt" in pages
+        validity_present = (
+            "2 år" in company_text
+            or "nästkommande år" in company_text
+            or "nastkommande ar" in company_text
+        )
         log.warning(
-            "CRAWL_SELF_TEST_OK quality=%s urls=%s",
+            "CRAWL_SELF_TEST_OK quality=%s contact_present=%s company_validity_present=%s urls=%s",
             result.quality(),
-            [page.get("url") for page in result.pages],
+            contact_present,
+            validity_present,
+            list(pages),
         )
     except Exception as exc:
         log.exception("CRAWL_SELF_TEST_FAILED type=%s", type(exc).__name__)
