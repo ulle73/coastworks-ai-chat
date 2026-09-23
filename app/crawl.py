@@ -89,6 +89,118 @@ def blocked(html: str):
     )
 
 
+def page_priority(candidate: str):
+    path = urlsplit(candidate).path.lower()
+    info_hint = bool(
+        re.search(
+            r"contact|kontakt|about|om-oss|service|tjanst|faq|help|support|"
+            r"company|business|foretag|företag|gift|present|pricing|price|pris|"
+            r"terms|villkor|policy|shipping|leverans|returns|retur|pages/",
+            path,
+            re.I,
+        )
+    )
+    transactional = bool(
+        re.search(r"/cart|/checkout|/account|/login|/search", path, re.I)
+    )
+    product = "/products/" in path
+    collection = "/collections/" in path
+    blog = "/blogs/" in path
+    depth = len([part for part in path.split("/") if part])
+    return (
+        1 if transactional else 0,
+        0 if info_hint else 1,
+        1 if product else 0,
+        1 if collection else 0,
+        1 if blog else 0,
+        depth,
+        len(path),
+    )
+
+
+def clean_internal_url(link: str, root: str):
+    try:
+        clean = normalize_url(link)
+    except ValueError:
+        return None
+    if origin(clean) != root:
+        return None
+    path = urlsplit(clean).path.lower()
+    if re.search(r"\.(?:xml|json|css|js|svg|webp|ico|docx?|xlsx?|zip|mp4)$", path, re.I):
+        return None
+    if any(x in path for x in ("/cart", "/checkout", "/login", "/wp-admin")):
+        return None
+    return clean
+
+
+def navigation_links(html: str, current_url: str, root: str):
+    soup = BeautifulSoup(html, "html.parser")
+    selectors = (
+        "header a[href], nav a[href], [role='navigation'] a[href], "
+        "footer a[href]"
+    )
+    links = []
+    for anchor in soup.select(selectors):
+        href = str(anchor.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        clean = clean_internal_url(urljoin(current_url, href), root)
+        if clean:
+            links.append(clean)
+    return list(dict.fromkeys(links))
+
+
+async def discover_sitemap_urls(fetcher, sitemap_urls, root, max_sitemaps=12, max_urls=500):
+    pending = deque(sitemap_urls)
+    seen_maps = set()
+    discovered = []
+    discovered_set = set()
+
+    while pending and len(seen_maps) < max_sitemaps and len(discovered) < max_urls:
+        sitemap = pending.popleft()
+        try:
+            sitemap = normalize_url(sitemap)
+        except ValueError:
+            continue
+        if sitemap in seen_maps or origin(sitemap) != root:
+            continue
+        seen_maps.add(sitemap)
+
+        try:
+            code, xml, _ = await fetcher.get(sitemap, allowed_origin=root)
+            if code != 200 or "<!DOCTYPE" in xml.upper() or "<!ENTITY" in xml.upper():
+                continue
+            tree = ElementTree.fromstring(xml)
+        except (CrawlFailure, ValueError, ElementTree.ParseError, aiohttp.ClientError, TimeoutError):
+            continue
+
+        locs = [
+            (item.text or "").strip()
+            for item in tree.iter()
+            if item.tag.endswith("}loc") or item.tag == "loc"
+        ]
+        if tree.tag.endswith("sitemapindex"):
+            for loc in locs:
+                try:
+                    child = normalize_url(loc)
+                except ValueError:
+                    continue
+                if origin(child) == root and child not in seen_maps:
+                    pending.append(child)
+            continue
+
+        for loc in locs:
+            clean = clean_internal_url(loc, root)
+            if clean and clean not in discovered_set:
+                discovered_set.add(clean)
+                discovered.append(clean)
+                if len(discovered) >= max_urls:
+                    break
+
+    discovered.sort(key=page_priority)
+    return discovered
+
+
 class Fetcher:
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -188,29 +300,26 @@ async def crawl(start_url, fetcher=None, renderer=None):
         raise CrawlFailure("SITE_REQUIRES_SLOW_CRAWL")
     queue = deque([start_url])
     seen = {start_url}
-    # Bounded sitemap discovery helps sites whose useful pages are not in the first navigation.
-    maps = [u for u in (robots.site_maps() or [root + "/sitemap.xml"]) if origin(u) == root][:2]
-    for sitemap in maps:
-        try:
-            code, xml, _ = await fetcher.get(sitemap, allowed_origin=root)
-            if code != 200 or "<!DOCTYPE" in xml.upper() or "<!ENTITY" in xml.upper():
-                continue
-            tree = ElementTree.fromstring(xml)
-            if tree.tag.endswith("sitemapindex"):
-                continue  # Large sitemap indexes belong to the deeper managed ingestion path.
-            for item in tree.iter():
-                if item.tag.endswith("}loc") or item.tag == "loc":
-                    candidate = normalize_url(item.text or "")
-                    if origin(candidate) == root and candidate not in seen and len(seen) < 100:
-                        seen.add(candidate)
-                        queue.append(candidate)
-        except (CrawlFailure, ValueError, ElementTree.ParseError, aiohttp.ClientError, TimeoutError):
-            continue
+    required_core = set()
+    seeded_after_homepage = False
+
+    sitemap_roots = [
+        u for u in (robots.site_maps() or [root + "/sitemap.xml"])
+        if origin(u) == root
+    ][:4]
+    sitemap_candidates = await discover_sitemap_urls(fetcher, sitemap_roots, root)
+
     hashes = set()
     result = CrawlResult()
-    max_attempts = min(max(settings.CRAWL_PAGES * 3, 12), 30)
-    while queue and len(result.pages) < settings.CRAWL_PAGES and result.attempted < max_attempts:
+    max_attempts = min(max(settings.CRAWL_PAGES * 4, 20), 40)
+    while queue and result.attempted < max_attempts:
+        if (
+            len(result.pages) >= settings.CRAWL_PAGES
+            and not any(candidate in required_core for candidate in queue)
+        ):
+            break
         url = queue.popleft()
+        required_core.discard(url)
         result.attempted += 1
         if not robots.can_fetch(USER_AGENT, url):
             result.denied += 1
@@ -234,46 +343,36 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 if blocked(html):
                     raise CrawlFailure("SITE_BLOCKED")
                 page = extract(html, final)
-            links = CloudflareBrowserCrawler._discover_urls(html, current_url=final, root=urlsplit(root))
-            candidates = []
-            for link in links:
-                try:
-                    clean = normalize_url(link)
-                except ValueError:
-                    continue
-                if re.search(r"\.(?:xml|json|css|js|svg|webp|ico|docx?|xlsx?)$", urlsplit(clean).path, re.I):
-                    continue
-                if any(
-                    x in urlsplit(clean).path.lower() for x in ("/cart", "/checkout", "/login", "/wp-admin")
-                ):
-                    continue
-                candidates.append(clean)
-            def priority(candidate):
-                path = urlsplit(candidate).path.lower()
-                # Prefer shallow informational/navigation pages over transactional/noisy URLs.
-                info_hint = bool(
-                    re.search(
-                        r"contact|kontakt|about|om-oss|service|tjanst|faq|help|support|"
-                        r"company|business|foretag|företag|gift|present|pricing|price|pris|"
-                        r"terms|villkor|policy|shipping|leverans|returns|retur|pages/",
-                        path,
-                        re.I,
-                    )
-                )
-                transactional = bool(
-                    re.search(r"/cart|/checkout|/account|/login|/search|/collections/", path, re.I)
-                )
-                depth = len([part for part in path.split("/") if part])
-                return (
-                    1 if transactional else 0,
-                    0 if info_hint else 1,
-                    depth,
-                    len(path),
-                )
+            links = CloudflareBrowserCrawler._discover_urls(
+                html, current_url=final, root=urlsplit(root)
+            )
+            candidates = [
+                clean
+                for link in links
+                if (clean := clean_internal_url(link, root)) is not None
+            ]
+            candidates = list(dict.fromkeys(candidates))
+            candidates.sort(key=page_priority)
 
-            candidates.sort(key=priority)
+            if not seeded_after_homepage:
+                core = navigation_links(html, final, root)
+                for clean in core:
+                    if clean not in seen:
+                        seen.add(clean)
+                        required_core.add(clean)
+                        queue.append(clean)
+
+                # Sitemap URLs come after the site's explicit navigation, so a large
+                # product catalog can never starve core pages from the preview crawl.
+                for clean in sitemap_candidates:
+                    if clean not in seen and len(seen) < 600:
+                        seen.add(clean)
+                        queue.append(clean)
+
+                seeded_after_homepage = True
+
             for clean in candidates:
-                if clean not in seen and len(seen) < 100:
+                if clean not in seen and len(seen) < 600:
                     seen.add(clean)
                     queue.append(clean)
             if page and len(page["content"].split()) >= 60:
