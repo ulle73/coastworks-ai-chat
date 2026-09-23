@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from app.security import normalize_url, origin
 
 USER_AGENT = "CoastworksBot/1.0"
 MAX_BYTES = 2_000_000
+log = logging.getLogger("coastworks.crawl")
 
 
 class CrawlFailure(Exception):
@@ -135,21 +137,38 @@ def clean_internal_url(link: str, root: str):
     path = urlsplit(clean).path.lower()
     if re.search(r"\.(?:xml|json|css|js|svg|webp|ico|docx?|xlsx?|zip|mp4)$", path, re.I):
         return None
-    if any(x in path for x in ("/cart", "/checkout", "/login", "/wp-admin")):
+    if any(
+        x in path
+        for x in (
+            "/cart",
+            "/checkout",
+            "/login",
+            "/account",
+            "/search",
+            "/wp-admin",
+            "/localization",
+            "/challenge",
+        )
+    ):
         return None
     return clean
 
 
 def navigation_links(html: str, current_url: str, root: str):
+    """Return actual site-navigation links, excluding header utility actions."""
     soup = BeautifulSoup(html, "html.parser")
-    selectors = "header a[href], nav a[href], [role='navigation'] a[href]"
     links = []
-    for anchor in soup.select(selectors):
+    for anchor in soup.select("nav a[href], [role='navigation'] a[href]"):
         href = str(anchor.get("href") or "").strip()
-        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+        label = anchor.get_text(" ", strip=True)
+        if (
+            not href
+            or not label
+            or href.startswith(("#", "javascript:", "mailto:", "tel:"))
+        ):
             continue
         clean = clean_internal_url(urljoin(current_url, href), root)
-        if clean:
+        if clean and clean != normalize_url(current_url):
             links.append(clean)
     return list(dict.fromkeys(links))
 
@@ -341,6 +360,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
         result.attempted += 1
         if not robots.can_fetch(USER_AGENT, url):
             result.denied += 1
+            if is_core:
+                result.core_failed += 1
             continue
         if result.attempted > 1:
             await asyncio.sleep(delay)
@@ -417,6 +438,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
             if is_core:
                 result.core_failed += 1
     result.discovered = len(seen)
-    if not result.quality()["passed"]:
+    quality = result.quality()
+    if not quality["passed"]:
+        log.warning("crawl_rejected quality=%s", quality)
         raise CrawlFailure("INSUFFICIENT_CONTENT")
     return result
