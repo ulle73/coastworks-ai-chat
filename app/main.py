@@ -35,6 +35,20 @@ from app.security import (
 log = logging.getLogger("coastworks.api")
 
 
+async def _crawl_self_test():
+    from app.crawl import crawl
+
+    try:
+        result = await crawl("https://golfkuponger.se/")
+        log.warning(
+            "CRAWL_SELF_TEST_OK quality=%s urls=%s",
+            result.quality(),
+            [page.get("url") for page in result.pages],
+        )
+    except Exception as exc:
+        log.exception("CRAWL_SELF_TEST_FAILED type=%s", type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app):
     await pool.open(wait=True)
@@ -44,6 +58,8 @@ async def lifespan(app):
 
         worker_task = asyncio.create_task(run_loop(), name="embedded-worker")
         log.info("embedded_worker_started")
+    if settings.CRAWL_SELF_TEST:
+        asyncio.create_task(_crawl_self_test(), name="crawl-self-test")
     try:
         yield
     finally:
