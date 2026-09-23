@@ -186,6 +186,23 @@ async def ready():
     return {"status": "ok"}
 
 
+@app.get("/health/crawl-check")
+async def crawl_check():
+    """Temporary development diagnostic for validating the production crawler."""
+    if settings.ENVIRONMENT != "development":
+        raise HTTPException(404)
+    from app.crawl import crawl
+
+    result = await crawl("https://golfkuponger.se/")
+    return {
+        "quality": result.quality(),
+        "pages": [
+            {"url": page.get("url"), "title": page.get("title"), "words": len(page.get("content", "").split())}
+            for page in result.pages
+        ],
+    }
+
+
 @app.post("/api/previews", status_code=202)
 async def create_preview(body: URLInput, request: Request, response: Response):
     require_first_party(request)
