@@ -14,7 +14,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.config import settings
 from app.core.crawl_target import CrawlTargetValidationError, validate_crawl_target
-from app.crawl import CrawlFailure, Fetcher
+from app.crawl import CrawlFailure, Fetcher, crawl
 from app.db import one, pool, transaction
 from app.email import send_claim
 from app.knowledge import answer
@@ -35,10 +35,23 @@ from app.security import (
 log = logging.getLogger("coastworks.api")
 
 
+async def _verify_dormy_once():
+    try:
+        result = await crawl("https://dormy.se/")
+        log.warning(
+            "DORMY_SELF_TEST_OK quality=%s urls=%s",
+            result.quality(),
+            [page.get("url") for page in result.pages],
+        )
+    except Exception as exc:
+        log.exception("DORMY_SELF_TEST_FAILED type=%s", type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app):
     await pool.open(wait=True)
     worker_task = None
+    verify_task = asyncio.create_task(_verify_dormy_once(), name="verify-dormy")
     if settings.EMBEDDED_WORKER:
         from app.worker import run_loop
 
@@ -47,6 +60,9 @@ async def lifespan(app):
     try:
         yield
     finally:
+        verify_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await verify_task
         if worker_task is not None:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
