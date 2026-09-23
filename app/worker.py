@@ -170,17 +170,21 @@ async def maintenance():
           ON CONFLICT DO NOTHING""")
 
 
-async def main():
+async def run_loop():
     logging.basicConfig(level=logging.INFO)
+    while True:
+        await maintenance()
+        job = await claim()
+        if job:
+            await process(job)
+        else:
+            await asyncio.sleep(3)
+
+
+async def main():
     await pool.open(wait=True)
     try:
-        while True:
-            await maintenance()
-            job = await claim()
-            if job:
-                await process(job)
-            else:
-                await asyncio.sleep(3)
+        await run_loop()
     finally:
         await pool.close()
 
