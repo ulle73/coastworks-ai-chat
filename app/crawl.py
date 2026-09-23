@@ -37,6 +37,9 @@ class CrawlResult:
     rendered: int = 0
     failed: int = 0
     denied: int = 0
+    core_total: int = 0
+    core_succeeded: int = 0
+    core_failed: int = 0
 
     def quality(self):
         words = sum(len(p["content"].split()) for p in self.pages)
@@ -54,7 +57,8 @@ class CrawlResult:
         not_catastrophic = success_ratio >= 0.35 or (
             len(self.pages) >= 1 and words >= 700
         )
-        sufficient = enough_content and enough_coverage and not_catastrophic
+        core_complete = self.core_failed == 0 and self.core_succeeded >= self.core_total
+        sufficient = enough_content and enough_coverage and not_catastrophic and core_complete
 
         return {
             "passed": sufficient,
@@ -66,6 +70,9 @@ class CrawlResult:
             "failed": self.failed,
             "denied": self.denied,
             "success_ratio": round(success_ratio, 3),
+            "core_total": self.core_total,
+            "core_succeeded": self.core_succeeded,
+            "core_failed": self.core_failed,
         }
 
 
@@ -135,12 +142,22 @@ def clean_internal_url(link: str, root: str):
 
 def navigation_links(html: str, current_url: str, root: str):
     soup = BeautifulSoup(html, "html.parser")
-    selectors = (
-        "header a[href], nav a[href], [role='navigation'] a[href], "
-        "footer a[href]"
-    )
+    selectors = "header a[href], nav a[href], [role='navigation'] a[href]"
     links = []
     for anchor in soup.select(selectors):
+        href = str(anchor.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        clean = clean_internal_url(urljoin(current_url, href), root)
+        if clean:
+            links.append(clean)
+    return list(dict.fromkeys(links))
+
+
+def footer_links(html: str, current_url: str, root: str):
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for anchor in soup.select("footer a[href]"):
         href = str(anchor.get("href") or "").strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
@@ -319,6 +336,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
         ):
             break
         url = queue.popleft()
+        is_core = url in required_core
         required_core.discard(url)
         result.attempted += 1
         if not robots.can_fetch(USER_AGENT, url):
@@ -361,6 +379,12 @@ async def crawl(start_url, fetcher=None, renderer=None):
                         seen.add(clean)
                         required_core.add(clean)
                         queue.append(clean)
+                result.core_total = len(required_core)
+
+                for clean in footer_links(html, final, root):
+                    if clean not in seen:
+                        seen.add(clean)
+                        queue.append(clean)
 
                 # Sitemap URLs come after the site's explicit navigation, so a large
                 # product catalog can never starve core pages from the preview crawl.
@@ -375,7 +399,14 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 if clean not in seen and len(seen) < 600:
                     seen.add(clean)
                     queue.append(clean)
-            if page and len(page["content"].split()) >= 60:
+            if is_core:
+                if page and len(page["content"].split()) >= 20:
+                    result.core_succeeded += 1
+                else:
+                    result.core_failed += 1
+
+            minimum_words = 20 if is_core else 60
+            if page and len(page["content"].split()) >= minimum_words:
                 page["content"] = page["content"][:24000]
                 fingerprint = hashlib.sha256(page["content"].encode()).hexdigest()
                 if fingerprint not in hashes:
@@ -383,6 +414,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
                     result.pages.append(page)
         except (CrawlFailure, aiohttp.ClientError, TimeoutError):
             result.failed += 1
+            if is_core:
+                result.core_failed += 1
     result.discovered = len(seen)
     if not result.quality()["passed"]:
         raise CrawlFailure("INSUFFICIENT_CONTENT")
