@@ -1,6 +1,8 @@
 import asyncio
 import json
 import math
+import re
+import unicodedata
 
 import numpy as np
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -11,6 +13,32 @@ from app.db import transaction
 from app.providers.factory import get_embeddings, get_llm
 
 FALLBACK = "Jag hittade inte ett säkert svar på hemsidan. Kontakta gärna företaget så kan de hjälpa dig."
+
+
+def _terms(text):
+    normalized = unicodedata.normalize("NFKD", (text or "").lower())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized)
+        if len(token) >= 4
+        and token not in {
+            "detta", "denna", "alla", "eller", "fran", "med", "som", "inte", "vara",
+            "galler", "hur", "vad", "vilka", "finns", "sida", "hemsida", "golfkuponger"
+        }
+    }
+
+
+def _hybrid_score(row, question_terms):
+    semantic = float(row["relevance"])
+    title_terms = _terms(row.get("title") or "")
+    url_terms = _terms((row.get("url") or "").replace("/", " "))
+    content_terms = _terms((row.get("content") or "")[:2500])
+    title_hits = len(question_terms & title_terms)
+    url_hits = len(question_terms & url_terms)
+    content_hits = len(question_terms & content_terms)
+    lexical = min(0.30, title_hits * 0.12 + url_hits * 0.10 + content_hits * 0.025)
+    return semantic + lexical, lexical
 
 
 def valid_vectors(vectors, count):
@@ -52,7 +80,7 @@ async def answer(bot, question, session_hash):
                 """SELECT c.url,c.title,c.content,1-(c.embedding <=> %s) AS relevance
               FROM chunks c JOIN bots b ON b.id=c.bot_id AND c.version=b.active_version
               WHERE c.bot_id=%s AND c.embedding_model=%s
-              ORDER BY c.embedding <=> %s LIMIT 6""",
+              ORDER BY c.embedding <=> %s LIMIT 12""",
                 (
                     np.asarray(vector),
                     bot["id"],
@@ -60,7 +88,16 @@ async def answer(bot, question, session_hash):
                     np.asarray(vector),
                 ),
             )
-            rows = [r for r in await cursor.fetchall() if r["relevance"] >= settings.MIN_RELEVANCE]
+            candidates = list(await cursor.fetchall())
+
+        question_terms = _terms(question)
+        scored = []
+        for row in candidates:
+            hybrid, lexical = _hybrid_score(row, question_terms)
+            if row["relevance"] >= settings.MIN_RELEVANCE or lexical >= 0.10:
+                scored.append((hybrid, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        rows = [row for _, row in scored[:6]]
         sources = list({r["url"]: {"url": r["url"], "title": r["title"]} for r in rows}.values())
         if not rows:
             response = FALLBACK
