@@ -1,0 +1,39 @@
+services:
+  - type: worker
+    name: coastworks-ai-chat-worker
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: main
+    repo: https://github.com/ulle73/coastworks-ai-chat
+    autoDeployTrigger: commit
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python -m app.worker
+    maxShutdownDelaySeconds: 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
+      - key: ENVIRONMENT
+        value: development
+      - key: APP_ORIGIN
+        value: https://coastworks-ai-chat.vercel.app
+      - key: PUBLIC_API_ORIGIN
+        value: https://coastworks-ai-chat-api.onrender.com
+      - key: SECRET_KEY
+        generateValue: true
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_MODEL
+        value: gemini-2.5-flash
+      - key: EMBEDDINGS_PROVIDER
+        value: gemini
+      - key: EMBEDDINGS_MODEL
+        value: gemini-embedding-001
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
