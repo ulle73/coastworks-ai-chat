@@ -40,14 +40,22 @@ class CrawlResult:
 
     def quality(self):
         words = sum(len(p["content"].split()) for p in self.pages)
-        # Small one-page sites can pass, but a lone page from a larger broken site cannot.
-        enough_pages = len(self.pages) >= min(3, max(1, self.discovered))
-        sufficient = (
-            words >= 300
-            and enough_pages
-            and self.failed == 0
-            and len(self.pages) / max(1, self.attempted - self.denied) >= 0.6
+        attempted_allowed = max(1, self.attempted - self.denied)
+        success_ratio = len(self.pages) / attempted_allowed
+
+        # Preview quality should reflect whether we have enough useful knowledge,
+        # not whether every sampled URL happened to return usable content.
+        # Real sites commonly contain stale links, duplicate pages and guarded paths.
+        enough_content = words >= 300
+        enough_coverage = (
+            len(self.pages) >= 2
+            or (len(self.pages) == 1 and (self.discovered <= 1 or words >= 700))
         )
+        not_catastrophic = success_ratio >= 0.35 or (
+            len(self.pages) >= 1 and words >= 1200
+        )
+        sufficient = enough_content and enough_coverage and not_catastrophic
+
         return {
             "passed": sufficient,
             "pages": len(self.pages),
@@ -57,6 +65,7 @@ class CrawlResult:
             "rendered": self.rendered,
             "failed": self.failed,
             "denied": self.denied,
+            "success_ratio": round(success_ratio, 3),
         }
 
 
