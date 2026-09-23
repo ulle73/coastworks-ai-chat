@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["development", "production", "test"] = "development"
     DATABASE_URL: str = "postgresql://coastworks:local-only@127.0.0.1:55432/coastworks"
     APP_ORIGIN: str = "http://localhost:8000"
+    PUBLIC_API_ORIGIN: str = ""
     SECRET_KEY: str = "development-only-change-before-deploy-0123456789"
     LLM_PROVIDER: Literal["gemini", "openai"] = "gemini"
     LLM_MODEL: str = "gemini-2.5-flash"
@@ -44,6 +45,8 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT == "production":
             if not self.APP_ORIGIN.startswith("https://") or len(self.SECRET_KEY) < 40:
                 raise ValueError("Production requires HTTPS and a long random SECRET_KEY")
+            if self.PUBLIC_API_ORIGIN and not self.PUBLIC_API_ORIGIN.startswith("https://"):
+                raise ValueError("Production PUBLIC_API_ORIGIN must use HTTPS")
             if "development" in self.SECRET_KEY or "localhost" in self.EMAIL_FROM:
                 raise ValueError("Development credentials are forbidden in production")
             if not self.SMTP_HOST or not self.SMTP_STARTTLS:
