@@ -115,7 +115,7 @@ async def process(job):
         async with asyncio.timeout(170):
             result = await crawl(job["bot"]["url"])
             log.info(
-                "crawl_quality job=%s pages=%s words=%s attempted=%s discovered=%s rendered=%s failed=%s denied=%s success_ratio=%s",
+                "crawl_quality job=%s pages=%s words=%s attempted=%s discovered=%s rendered=%s failed=%s denied=%s success_ratio=%s core=%s/%s core_failed=%s",
                 job["id"],
                 result.quality()["pages"],
                 result.quality()["words"],
@@ -125,6 +125,9 @@ async def process(job):
                 result.quality()["failed"],
                 result.quality()["denied"],
                 result.quality()["success_ratio"],
+                result.quality()["core_succeeded"],
+                result.quality()["core_total"],
+                result.quality()["core_failed"],
             )
             async with transaction() as db:
                 sources = await (
