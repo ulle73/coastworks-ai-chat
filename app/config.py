@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     APP_ORIGIN: str = "http://localhost:8000"
     PUBLIC_API_ORIGIN: str = ""
     EMBEDDED_WORKER: bool = False
-    CRAWL_SELF_TEST: bool = False
     SECRET_KEY: str = "development-only-change-before-deploy-0123456789"
     LLM_PROVIDER: Literal["gemini", "openai"] = "gemini"
     LLM_MODEL: str = "gemini-2.5-flash"
