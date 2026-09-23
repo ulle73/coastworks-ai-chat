@@ -470,7 +470,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
     supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
     submitted_host = urlsplit(start_url).hostname or ""
-    root = origin(start_url)
+    submitted_origin = origin(start_url)
+    root = submitted_origin
 
     # Check robots on the submitted origin first. A legacy domain may itself
     # redirect robots.txt to the canonical domain; allow that one safe migration.
@@ -502,7 +503,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
         raise CrawlFailure(f"HTTP_{entry_status}")
     canonical_start = normalize_url(canonical_start)
     canonical_root = origin(canonical_start)
-    migrated_domain = canonical_root != root
+    migrated_domain = canonical_root != submitted_origin
     if migrated_domain:
         root = canonical_root
         status, robots_text, _ = await fetcher.get(
