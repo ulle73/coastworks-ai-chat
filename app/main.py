@@ -35,76 +35,6 @@ from app.security import (
 log = logging.getLogger("coastworks.api")
 
 
-async def _crawl_self_test():
-    from app.crawl import crawl
-
-    try:
-        result = await crawl("https://golfkuponger.se/")
-        pages = {page.get("url"): page for page in result.pages}
-        company_url = "https://golfkuponger.se/pages/foretagsbestallning"
-        gift_url = "https://golfkuponger.se/pages/presentkort"
-        company = pages.get(company_url, {})
-        company_text = (company.get("content") or "").lower()
-        contact_present = "https://golfkuponger.se/pages/kontakt" in pages
-        validity_present = (
-            "2 år" in company_text
-            or "nästkommande år" in company_text
-            or "nastkommande ar" in company_text
-        )
-
-        # Exercise the same embedding + hybrid reranking logic used by chat,
-        # without writing a synthetic bot into the production database.
-        import numpy as np
-        from app.knowledge import _hybrid_score, _terms, build
-        from app.providers.factory import get_embeddings
-
-        question = "Har presentkort och företagsbeställningar samma giltighetstid?"
-        chunks, vectors = await build(result.pages, uuid.uuid4())
-        query_vector = np.asarray(await get_embeddings().aembed_query(question))
-        query_norm = float(np.linalg.norm(query_vector)) or 1.0
-        rows = []
-        for chunk, vector in zip(chunks, vectors, strict=True):
-            vector_array = np.asarray(vector)
-            denom = (float(np.linalg.norm(vector_array)) or 1.0) * query_norm
-            relevance = float(np.dot(vector_array, query_vector) / denom)
-            rows.append(
-                {
-                    "url": chunk.metadata["url"],
-                    "title": chunk.metadata["title"],
-                    "content": chunk.page_content,
-                    "relevance": relevance,
-                }
-            )
-        rows.sort(key=lambda row: row["relevance"], reverse=True)
-        terms = _terms(question)
-        reranked = sorted(
-            (
-                (_hybrid_score(row, terms)[0], row)
-                for row in rows[:12]
-                if row["relevance"] >= settings.MIN_RELEVANCE
-                or _hybrid_score(row, terms)[1] >= 0.10
-            ),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        top_urls = list(dict.fromkeys(row["url"] for _, row in reranked[:6]))
-        retrieval_ok = company_url in top_urls and gift_url in top_urls
-
-        log.warning(
-            "CRAWL_SELF_TEST_OK quality=%s contact_present=%s company_validity_present=%s retrieval_ok=%s top_urls=%s urls=%s",
-            result.quality(),
-            contact_present,
-            validity_present,
-            retrieval_ok,
-            top_urls,
-            list(pages),
-        )
-        if not (contact_present and validity_present and retrieval_ok):
-            raise RuntimeError("Crawler/RAG self-test failed")
-    except Exception as exc:
-        log.exception("CRAWL_SELF_TEST_FAILED type=%s", type(exc).__name__)
-
-
 @asynccontextmanager
 async def lifespan(app):
     await pool.open(wait=True)
@@ -114,8 +44,6 @@ async def lifespan(app):
 
         worker_task = asyncio.create_task(run_loop(), name="embedded-worker")
         log.info("embedded_worker_started")
-    if settings.CRAWL_SELF_TEST:
-        asyncio.create_task(_crawl_self_test(), name="crawl-self-test")
     try:
         yield
     finally:
@@ -256,23 +184,6 @@ async def ready():
     async with transaction() as db:
         await db.execute("SELECT 1 FROM schema_migrations LIMIT 1")
     return {"status": "ok"}
-
-
-@app.get("/api/debug/crawl-check")
-async def crawl_check():
-    """Temporary development diagnostic for validating the production crawler."""
-    if settings.ENVIRONMENT != "development":
-        raise HTTPException(404)
-    from app.crawl import crawl
-
-    result = await crawl("https://golfkuponger.se/")
-    return {
-        "quality": result.quality(),
-        "pages": [
-            {"url": page.get("url"), "title": page.get("title"), "words": len(page.get("content", "").split())}
-            for page in result.pages
-        ],
-    }
 
 
 @app.post("/api/previews", status_code=202)
