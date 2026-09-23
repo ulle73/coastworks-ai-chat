@@ -161,6 +161,29 @@ def locale_path_scope(url: str):
     return None
 
 
+def desired_language_from_host(host: str):
+    labels = (host or "").lower().rstrip(".").split(".")
+    cc = labels[-1] if labels and len(labels[-1]) == 2 else None
+    return COUNTRY_LANGUAGE.get(cc) if cc else None
+
+
+def locale_candidate_url(canonical_url: str, language: str):
+    parts = urlsplit(canonical_url)
+    segments = [part for part in parts.path.split("/") if part]
+    if segments and re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", segments[0].lower()):
+        segments[0] = language
+    else:
+        segments.insert(0, language)
+    path = "/" + "/".join(segments)
+    return normalize_url(f"{parts.scheme}://{parts.netloc}{path}")
+
+
+def document_language(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+    value = str((soup.html or {}).get("lang") or "").strip().lower()
+    return value.replace("_", "-")
+
+
 def page_priority(candidate: str):
     path = urlsplit(candidate).path.lower()
     info_hint = bool(
@@ -478,19 +501,10 @@ async def crawl(start_url, fetcher=None, renderer=None):
     if entry_status >= 400:
         raise CrawlFailure(f"HTTP_{entry_status}")
     canonical_start = normalize_url(canonical_start)
-    locale_target = preferred_locale_url(entry_html, canonical_start, submitted_host)
-    if locale_target:
-        log.info(
-            "locale_rebased submitted_host=%s from=%s to=%s",
-            submitted_host,
-            canonical_start,
-            locale_target,
-        )
-        canonical_start = locale_target
     canonical_root = origin(canonical_start)
-    if canonical_root != root:
+    migrated_domain = canonical_root != root
+    if migrated_domain:
         root = canonical_root
-        start_url = canonical_start
         status, robots_text, _ = await fetcher.get(
             root + "/robots.txt",
             allowed_origin=root,
@@ -499,10 +513,51 @@ async def crawl(start_url, fetcher=None, renderer=None):
             raise CrawlFailure("ROBOTS_UNAVAILABLE")
         robots = RobotFileParser()
         robots.parse(robots_text.splitlines() if status == 200 else [])
-        if not robots.can_fetch(USER_AGENT, start_url):
+        if not robots.can_fetch(USER_AGENT, canonical_start):
             raise CrawlFailure("ROBOTS_DENIED")
+
+    locale_target = preferred_locale_url(entry_html, canonical_start, submitted_host)
+    wanted_language = desired_language_from_host(submitted_host)
+
+    # Some multi-market sites geo-redirect crawlers and don't expose hreflang
+    # in the returned markup. If a ccTLD migrated to a shared origin and the
+    # returned path is another locale, probe the locale implied by the ccTLD.
+    if not locale_target and migrated_domain and wanted_language:
+        candidate = locale_candidate_url(canonical_start, wanted_language)
+        if candidate != canonical_start and robots.can_fetch(USER_AGENT, candidate):
+            try:
+                candidate_status, candidate_html, candidate_final = await fetcher.get(
+                    candidate,
+                    allowed_origin=root,
+                )
+                candidate_final = normalize_url(candidate_final)
+                language = document_language(candidate_html)
+                if (
+                    candidate_status == 200
+                    and origin(candidate_final) == root
+                    and (
+                        not language
+                        or language == wanted_language
+                        or language.startswith(wanted_language + "-")
+                    )
+                ):
+                    locale_target = candidate_final
+            except (CrawlFailure, aiohttp.ClientError, TimeoutError, ValueError):
+                pass
+
+    if locale_target:
+        log.info(
+            "locale_rebased submitted_host=%s from=%s to=%s",
+            submitted_host,
+            canonical_start,
+            locale_target,
+        )
+        start_url = locale_target
     else:
         start_url = canonical_start
+
+    if not robots.can_fetch(USER_AGENT, start_url):
+        raise CrawlFailure("ROBOTS_DENIED")
 
     locale_scope = locale_path_scope(start_url) if locale_target else None
 
