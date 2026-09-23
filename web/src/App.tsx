@@ -27,8 +27,11 @@ function Preview({
         if (stopped) return;
         setBot(result);
         setError("");
-        if (!["ready", "failed"].includes(result.state))
+        if (result.state === "failed") {
+          sessionStorage.removeItem("cw_bot");
+        } else if (result.state !== "ready") {
           timer = setTimeout(poll, 1800);
+        }
       } catch (e) {
         if (!stopped) setError((e as Error).message);
       }
@@ -94,7 +97,7 @@ function Preview({
           <h1>Vi behöver lite hjälp här.</h1>
           <p>{bot.message}</p>
           <div className="actions">
-            <button onClick={onReset}>Testa en annan hemsida</button>
+            <button onClick={onReset}>Försök igen</button>
             <a className="button secondary" href="#managed">
               Låt oss hjälpa dig
             </a>
