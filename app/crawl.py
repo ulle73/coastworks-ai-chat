@@ -336,12 +336,24 @@ class Renderer:
 
 
 async def crawl(start_url, fetcher=None, renderer=None):
+    """Crawl a site with sitemap-first discovery, bounded concurrency and retries.
+
+    Strategy:
+    1. Fetch robots + homepage.
+    2. Prioritize real navigation links.
+    3. Merge recursive sitemap URLs and ordinary internal links.
+    4. Crawl the resulting frontier concurrently with bounded retries.
+    5. Escalate only convincing client-rendered shells to a browser renderer.
+    """
     if fetcher is None:
         async with Fetcher() as fetcher:
             async with asyncio.timeout(settings.CRAWL_SECONDS):
                 return await crawl(start_url, fetcher, renderer)
+
+    supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
     root = origin(start_url)
+
     status, robots_text, final_robots = await fetcher.get(
         root + "/robots.txt", allowed_origin=root, canonical_redirect=True
     )
@@ -350,113 +362,114 @@ async def crawl(start_url, fetcher=None, renderer=None):
         start_url = root + urlsplit(start_url).path
     if status not in {200, 404, 410}:
         raise CrawlFailure("ROBOTS_UNAVAILABLE")
+
     robots = RobotFileParser()
     robots.parse(robots_text.splitlines() if status == 200 else [])
     if not robots.can_fetch(USER_AGENT, start_url):
         raise CrawlFailure("ROBOTS_DENIED")
-    delay = max(0.2, float(robots.crawl_delay(USER_AGENT) or 0))
-    if delay > 5:
+
+    robots_delay = float(robots.crawl_delay(USER_AGENT) or 0)
+    if robots_delay > 5:
         raise CrawlFailure("SITE_REQUIRES_SLOW_CRAWL")
-    queue = deque([start_url])
-    seen = {start_url}
-    required_core = set()
-    seeded_after_homepage = False
 
     sitemap_roots = [
-        u for u in (robots.site_maps() or [root + "/sitemap.xml"])
+        u
+        for u in (robots.site_maps() or [root + "/sitemap.xml"])
         if origin(u) == root
-    ][:4]
-    sitemap_candidates = await discover_sitemap_urls(fetcher, sitemap_roots, root)
+    ][:8]
+    sitemap_candidates = await discover_sitemap_urls(
+        fetcher,
+        sitemap_roots,
+        root,
+        max_sitemaps=24,
+        max_urls=max(500, settings.CRAWL_PAGES * 10),
+    )
 
-    hashes = set()
     result = CrawlResult()
-    max_attempts = min(max(settings.CRAWL_PAGES * 2, 30), 120)
-    while queue and result.attempted < max_attempts:
-        if (
-            len(result.pages) >= settings.CRAWL_PAGES
-            and not any(candidate in required_core for candidate in queue)
-        ):
-            break
-        url = queue.popleft()
-        is_core = url in required_core
-        required_core.discard(url)
-        result.attempted += 1
+    hashes = set()
+    attempted_urls = set()
+    browser_slots = asyncio.Semaphore(2)
+    request_slots = asyncio.Semaphore(1 if robots_delay >= 1 else 6)
+    browser_available = supplied_renderer or bool(
+        settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID
+    )
+
+    async def load_page(url: str, *, is_core: bool = False):
+        if url in attempted_urls:
+            return None
+        attempted_urls.add(url)
+
         if not robots.can_fetch(USER_AGENT, url):
             result.denied += 1
             if is_core:
                 result.core_failed += 1
-            continue
-        if result.attempted > 1:
-            await asyncio.sleep(delay)
+            log.info("page_denied url=%s core=%s", url, is_core)
+            return None
+
+        result.attempted += 1
         try:
-            status, html, final = await fetch_with_retries(fetcher, url, root, retries=3)
+            async with request_slots:
+                if robots_delay:
+                    await asyncio.sleep(robots_delay)
+                _, html, final = await fetch_with_retries(
+                    fetcher, url, root, retries=1
+                )
+
             if blocked(html):
                 raise CrawlFailure("SITE_BLOCKED")
+
             page = extract(html, final)
             text = page["content"] if page else ""
-            # Only escalate when the page is a convincing client-rendered shell.
-            # The mere presence of JavaScript is not evidence that content needs a browser:
-            # Shopify and most modern server-rendered sites ship scripts on every page.
-            shell = requires_browser_rendering(html, text, useful_text_threshold=400)
-            if shell:
-                if result.rendered >= 4:
-                    raise CrawlFailure("RENDER_BUDGET_EXHAUSTED")
-                html = await renderer.render(final)
-                result.rendered += 1
-                if blocked(html):
-                    raise CrawlFailure("SITE_BLOCKED")
-                page = extract(html, final)
-            links = CloudflareBrowserCrawler._discover_urls(
-                html, current_url=final, root=urlsplit(root)
+            shell = requires_browser_rendering(
+                html, text, useful_text_threshold=300
             )
-            candidates = [
-                clean
-                for link in links
-                if (clean := clean_internal_url(link, root)) is not None
-            ]
-            candidates = list(dict.fromkeys(candidates))
-            candidates.sort(key=page_priority)
 
-            if not seeded_after_homepage:
-                core = navigation_links(html, final, root)
-                for clean in core:
-                    if clean not in seen:
-                        seen.add(clean)
-                        required_core.add(clean)
-                        queue.append(clean)
-                result.core_total = len(required_core)
-
-                for clean in footer_links(html, final, root):
-                    if clean not in seen:
-                        seen.add(clean)
-                        queue.append(clean)
-
-                # Sitemap URLs come after the site's explicit navigation, so a large
-                # product catalog can never starve core pages from the preview crawl.
-                for clean in sitemap_candidates:
-                    if clean not in seen and len(seen) < 600:
-                        seen.add(clean)
-                        queue.append(clean)
-
-                seeded_after_homepage = True
-
-            for clean in candidates:
-                if clean not in seen and len(seen) < 600:
-                    seen.add(clean)
-                    queue.append(clean)
-            if is_core:
-                if page and len(page["content"].split()) >= 20:
-                    result.core_succeeded += 1
+            if shell:
+                if not browser_available:
+                    # A real JS shell with no useful static fallback cannot be indexed
+                    # safely. Ordinary short SSR pages never enter this branch.
+                    if not page or len(text.split()) < 20:
+                        raise CrawlFailure("RENDERER_UNAVAILABLE")
                 else:
-                    result.core_failed += 1
+                    async with browser_slots:
+                        html = await renderer.render(final)
+                    result.rendered += 1
+                    if blocked(html):
+                        raise CrawlFailure("SITE_BLOCKED")
+                    page = extract(html, final)
+                    text = page["content"] if page else ""
 
-            minimum_words = 20 if is_core else 60
-            if page and len(page["content"].split()) >= minimum_words:
+            minimum_words = 20 if is_core else 45
+            stored = False
+            if page and len(text.split()) >= minimum_words:
                 page["content"] = page["content"][:24000]
                 fingerprint = hashlib.sha256(page["content"].encode()).hexdigest()
                 if fingerprint not in hashes:
                     hashes.add(fingerprint)
                     result.pages.append(page)
+                    stored = True
+
+            if is_core:
+                if stored:
+                    result.core_succeeded += 1
+                else:
+                    result.core_failed += 1
+
+            links = CloudflareBrowserCrawler._discover_urls(
+                html, current_url=final, root=urlsplit(root)
+            )
+            discovered = [
+                clean
+                for link in links
+                if (clean := clean_internal_url(link, root)) is not None
+            ]
+            return {
+                "url": url,
+                "final": final,
+                "html": html,
+                "links": list(dict.fromkeys(discovered)),
+                "stored": stored,
+            }
         except (CrawlFailure, aiohttp.ClientError, TimeoutError) as exc:
             result.failed += 1
             code = exc.code if isinstance(exc, CrawlFailure) else type(exc).__name__
@@ -465,9 +478,74 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 log.warning("priority_page_failed url=%s code=%s", url, code)
             else:
                 log.info("page_failed url=%s code=%s", url, code)
-    result.discovered = len(seen)
+            return None
+
+    # Homepage is the authoritative source for first-party navigation.
+    home = await load_page(start_url)
+    if not home:
+        raise CrawlFailure("INSUFFICIENT_CONTENT")
+
+    core_urls = navigation_links(home["html"], home["final"], root)
+    result.core_total = len(core_urls)
+
+    # Queue ordering matters: navigation first, then footer/info pages, then sitemap.
+    # The sitemap is still the main completeness mechanism and is parsed recursively.
+    frontier = []
+    queued = {normalize_url(start_url)}
+
+    def enqueue_many(urls):
+        for candidate in urls:
+            if candidate not in queued:
+                queued.add(candidate)
+                frontier.append(candidate)
+
+    enqueue_many(core_urls)
+    enqueue_many(footer_links(home["html"], home["final"], root))
+    enqueue_many(sorted(sitemap_candidates, key=page_priority))
+    enqueue_many(sorted(home["links"], key=page_priority))
+
+    core_set = set(core_urls)
+    max_attempts = min(max(settings.CRAWL_PAGES * 2, 30), 200)
+    cursor = 0
+
+    while cursor < len(frontier):
+        if result.attempted >= max_attempts:
+            break
+        if len(result.pages) >= settings.CRAWL_PAGES and not any(
+            candidate in core_set and candidate not in attempted_urls
+            for candidate in frontier[cursor:]
+        ):
+            break
+
+        remaining_attempts = max_attempts - result.attempted
+        # A moderate batch keeps memory bounded while allowing useful concurrency.
+        batch_size = min(18, remaining_attempts, len(frontier) - cursor)
+        batch = frontier[cursor : cursor + batch_size]
+        cursor += batch_size
+
+        loaded = await asyncio.gather(
+            *[
+                load_page(url, is_core=url in core_set)
+                for url in batch
+            ]
+        )
+
+        # Links discovered outside a sitemap are useful for sites with incomplete
+        # sitemap coverage. They are appended only after the current priority batch.
+        for item in loaded:
+            if not item:
+                continue
+            enqueue_many(sorted(item["links"], key=page_priority))
+
+    result.discovered = len(queued)
     quality = result.quality()
+    log.info(
+        "crawl_complete quality=%s urls=%s",
+        quality,
+        [page.get("url") for page in result.pages],
+    )
     if not quality["passed"]:
         log.warning("crawl_rejected quality=%s", quality)
         raise CrawlFailure("INSUFFICIENT_CONTENT")
     return result
+
