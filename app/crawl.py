@@ -160,10 +160,23 @@ def navigation_links(html: str, current_url: str, root: str):
     for anchor in soup.select("nav a[href], [role='navigation'] a[href]"):
         href = str(anchor.get("href") or "").strip()
         label = anchor.get_text(" ", strip=True)
+        ancestors = [anchor, *list(anchor.parents)[:4]]
+        utility_context = " ".join(
+            " ".join(
+                [
+                    str(node.get("id") or ""),
+                    " ".join(node.get("class") or []),
+                    str(node.get("data-localization-form") or ""),
+                ]
+            )
+            for node in ancestors
+            if getattr(node, "get", None)
+        ).lower()
         if (
             not href
             or not label
             or href.startswith(("#", "javascript:", "mailto:", "tel:"))
+            or re.search(r"localization|language|locale|country-selector", utility_context)
         ):
             continue
         clean = clean_internal_url(urljoin(current_url, href), root)
@@ -439,13 +452,16 @@ async def crawl(start_url, fetcher=None, renderer=None):
                     page = extract(html, final)
                     text = page["content"] if page else ""
 
-            minimum_words = 20 if is_core else 45
+            minimum_words = 5 if is_core else 45
             stored = False
             if page and len(text.split()) >= minimum_words:
                 page["content"] = page["content"][:24000]
                 fingerprint = hashlib.sha256(page["content"].encode()).hexdigest()
-                if fingerprint not in hashes:
-                    hashes.add(fingerprint)
+                # Navigation pages are few and user-visible; preserve them even if
+                # their body text duplicates another page (e.g. a short contact page).
+                identity = (final, fingerprint) if is_core else fingerprint
+                if identity not in hashes:
+                    hashes.add(identity)
                     result.pages.append(page)
                     stored = True
 
