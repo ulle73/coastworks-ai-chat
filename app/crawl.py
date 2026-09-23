@@ -52,7 +52,7 @@ class CrawlResult:
             or (len(self.pages) == 1 and (self.discovered <= 1 or words >= 700))
         )
         not_catastrophic = success_ratio >= 0.35 or (
-            len(self.pages) >= 1 and words >= 1200
+            len(self.pages) >= 1 and words >= 700
         )
         sufficient = enough_content and enough_coverage and not_catastrophic
 
