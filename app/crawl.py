@@ -56,9 +56,7 @@ class CrawlResult:
             len(self.pages) >= 2
             or (len(self.pages) == 1 and (self.discovered <= 1 or words >= 700))
         )
-        not_catastrophic = success_ratio >= 0.35 or (
-            len(self.pages) >= 1 and words >= 700
-        )
+        not_catastrophic = success_ratio >= 0.35
         sufficient = enough_content and enough_coverage and not_catastrophic
 
         return {
@@ -382,23 +380,18 @@ async def crawl(start_url, fetcher=None, renderer=None):
 
     supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
-
-    # Resolve legacy/marketing domains once, before robots and discovery.
-    # After this point the crawler is locked to the canonical origin.
-    original_root = origin(start_url)
-    entry_status, _, canonical_start = await fetcher.get(
-        start_url,
-        allowed_origin=original_root,
-        canonical_redirect=True,
-    )
-    if entry_status >= 400:
-        raise CrawlFailure(f"HTTP_{entry_status}")
-    start_url = normalize_url(canonical_start)
     root = origin(start_url)
 
+    # Check robots on the submitted origin first. A legacy domain may itself
+    # redirect robots.txt to the canonical domain; allow that one safe migration.
     status, robots_text, final_robots = await fetcher.get(
-        root + "/robots.txt", allowed_origin=root
+        root + "/robots.txt",
+        allowed_origin=root,
+        canonical_redirect=True,
     )
+    if origin(final_robots) != root:
+        root = origin(final_robots)
+        start_url = root + urlsplit(start_url).path
     if status not in {200, 404, 410}:
         raise CrawlFailure("ROBOTS_UNAVAILABLE")
 
@@ -406,6 +399,34 @@ async def crawl(start_url, fetcher=None, renderer=None):
     robots.parse(robots_text.splitlines() if status == 200 else [])
     if not robots.can_fetch(USER_AGENT, start_url):
         raise CrawlFailure("ROBOTS_DENIED")
+
+    # Resolve the actual entrypoint. If a legacy/marketing domain redirects to a
+    # different canonical HTTPS origin (e.g. dormy.se -> dormy.com), rebase the
+    # crawl there and fetch that origin's robots before crawling any content.
+    entry_status, _, canonical_start = await fetcher.get(
+        start_url,
+        allowed_origin=root,
+        canonical_redirect=True,
+    )
+    if entry_status >= 400:
+        raise CrawlFailure(f"HTTP_{entry_status}")
+    canonical_start = normalize_url(canonical_start)
+    canonical_root = origin(canonical_start)
+    if canonical_root != root:
+        root = canonical_root
+        start_url = canonical_start
+        status, robots_text, _ = await fetcher.get(
+            root + "/robots.txt",
+            allowed_origin=root,
+        )
+        if status not in {200, 404, 410}:
+            raise CrawlFailure("ROBOTS_UNAVAILABLE")
+        robots = RobotFileParser()
+        robots.parse(robots_text.splitlines() if status == 200 else [])
+        if not robots.can_fetch(USER_AGENT, start_url):
+            raise CrawlFailure("ROBOTS_DENIED")
+    else:
+        start_url = canonical_start
 
     robots_delay = float(robots.crawl_delay(USER_AGENT) or 0)
     if robots_delay > 5:
