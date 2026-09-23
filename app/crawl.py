@@ -394,10 +394,11 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 raise CrawlFailure("SITE_BLOCKED")
             page = extract(html, final)
             text = page["content"] if page else ""
-            # The old classifier alone misses partial SSR and Next/Nuxt shells.
+            # Only escalate when the page is a convincing client-rendered shell.
+            # The mere presence of JavaScript is not evidence that content needs a browser:
+            # Shopify and most modern server-rendered sites ship scripts on every page.
             shell = requires_browser_rendering(html, text, useful_text_threshold=400)
-            sparse_js = len(text.split()) < 90 and "<script" in html.lower()
-            if shell or sparse_js:
+            if shell:
                 if result.rendered >= 4:
                     raise CrawlFailure("RENDER_BUDGET_EXHAUSTED")
                 html = await renderer.render(final)
