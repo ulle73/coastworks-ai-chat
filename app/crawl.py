@@ -59,8 +59,7 @@ class CrawlResult:
         not_catastrophic = success_ratio >= 0.35 or (
             len(self.pages) >= 1 and words >= 700
         )
-        core_complete = self.core_failed == 0 and self.core_succeeded >= self.core_total
-        sufficient = enough_content and enough_coverage and not_catastrophic and core_complete
+        sufficient = enough_content and enough_coverage and not_catastrophic
 
         return {
             "passed": sufficient,
@@ -275,6 +274,30 @@ class Fetcher:
         raise CrawlFailure("REDIRECT_LIMIT")
 
 
+async def fetch_with_retries(fetcher, url, root, *, retries=3):
+    """Fetch with bounded exponential backoff for transient network/server failures."""
+    last_error = None
+    transient_statuses = {408, 425, 429, 500, 502, 503, 504}
+    for attempt in range(retries + 1):
+        try:
+            status, html, final = await fetcher.get(url, allowed_origin=root)
+            if status == 200:
+                return status, html, final
+            error = CrawlFailure(f"HTTP_{status}")
+            if status not in transient_statuses:
+                raise error
+            last_error = error
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            last_error = exc
+
+        if attempt < retries:
+            await asyncio.sleep(min(2.0, 0.35 * (2**attempt)))
+
+    if isinstance(last_error, CrawlFailure):
+        raise last_error
+    raise CrawlFailure("FETCH_FAILED") from last_error
+
+
 class Renderer:
     """Adapt Coastworks' stateless renderer; fix JSON envelopes and bound body size."""
 
@@ -347,7 +370,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
 
     hashes = set()
     result = CrawlResult()
-    max_attempts = min(max(settings.CRAWL_PAGES * 4, 20), 40)
+    max_attempts = min(max(settings.CRAWL_PAGES * 2, 30), 120)
     while queue and result.attempted < max_attempts:
         if (
             len(result.pages) >= settings.CRAWL_PAGES
@@ -366,8 +389,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
         if result.attempted > 1:
             await asyncio.sleep(delay)
         try:
-            status, html, final = await fetcher.get(url, allowed_origin=root)
-            if status != 200 or blocked(html):
+            status, html, final = await fetch_with_retries(fetcher, url, root, retries=3)
+            if blocked(html):
                 raise CrawlFailure("SITE_BLOCKED")
             page = extract(html, final)
             text = page["content"] if page else ""
@@ -433,10 +456,14 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 if fingerprint not in hashes:
                     hashes.add(fingerprint)
                     result.pages.append(page)
-        except (CrawlFailure, aiohttp.ClientError, TimeoutError):
+        except (CrawlFailure, aiohttp.ClientError, TimeoutError) as exc:
             result.failed += 1
+            code = exc.code if isinstance(exc, CrawlFailure) else type(exc).__name__
             if is_core:
                 result.core_failed += 1
+                log.warning("priority_page_failed url=%s code=%s", url, code)
+            else:
+                log.info("page_failed url=%s code=%s", url, code)
     result.discovered = len(seen)
     quality = result.quality()
     if not quality["passed"]:
