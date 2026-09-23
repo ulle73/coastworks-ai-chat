@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_contract(self):
-        if not 1 <= self.CRAWL_PAGES <= 20 or not 10 <= self.CRAWL_SECONDS <= 120:
+        if not 1 <= self.CRAWL_PAGES <= 100 or not 10 <= self.CRAWL_SECONDS <= 180:
             raise ValueError("Crawl budget outside supported bounds")
         if self.ENVIRONMENT == "production":
             if not self.APP_ORIGIN.startswith("https://") or len(self.SECRET_KEY) < 40:
