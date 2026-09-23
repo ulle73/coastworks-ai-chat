@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+web/.local-*.mjs
+web/*.tsbuildinfo
+*.log
+.local/
