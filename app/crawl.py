@@ -264,14 +264,31 @@ class Fetcher:
         await self.session.close()
 
     async def get(self, url, *, allowed_origin=None, canonical_redirect=False):
+        migrated_origin = None
         for _ in range(5):
             url = normalize_url(url)
-            if allowed_origin and origin(url) != allowed_origin:
-                original, target = urlsplit(allowed_origin), urlsplit(url)
+            current_origin = origin(url)
+            expected_origin = migrated_origin or allowed_origin
+            if expected_origin and current_origin != expected_origin:
+                original, target = urlsplit(expected_origin), urlsplit(url)
                 alias = (original.hostname or "").removeprefix("www.") == (
                     target.hostname or ""
-                ).removeprefix("www.") and not (original.scheme == "https" and target.scheme == "http")
-                if not canonical_redirect or not alias:
+                ).removeprefix("www.") and not (
+                    original.scheme == "https" and target.scheme == "http"
+                )
+                safe_migration = (
+                    canonical_redirect
+                    and migrated_origin is None
+                    and target.scheme == "https"
+                )
+                if alias:
+                    pass
+                elif safe_migration:
+                    # Only the initial canonical-resolution request may migrate
+                    # to a new public HTTPS origin (e.g. dormy.se -> dormy.com).
+                    # validate_crawl_target below still blocks private/internal IPs.
+                    migrated_origin = current_origin
+                else:
                     raise CrawlFailure("OFFSITE_REDIRECT")
             await validate_crawl_target(url)
             async with self.session.get(url, allow_redirects=False) as response:
@@ -365,14 +382,23 @@ async def crawl(start_url, fetcher=None, renderer=None):
 
     supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
+
+    # Resolve legacy/marketing domains once, before robots and discovery.
+    # After this point the crawler is locked to the canonical origin.
+    original_root = origin(start_url)
+    entry_status, _, canonical_start = await fetcher.get(
+        start_url,
+        allowed_origin=original_root,
+        canonical_redirect=True,
+    )
+    if entry_status >= 400:
+        raise CrawlFailure(f"HTTP_{entry_status}")
+    start_url = normalize_url(canonical_start)
     root = origin(start_url)
 
     status, robots_text, final_robots = await fetcher.get(
-        root + "/robots.txt", allowed_origin=root, canonical_redirect=True
+        root + "/robots.txt", allowed_origin=root
     )
-    if origin(final_robots) != root:
-        root = origin(final_robots)
-        start_url = root + urlsplit(start_url).path
     if status not in {200, 404, 410}:
         raise CrawlFailure("ROBOTS_UNAVAILABLE")
 
