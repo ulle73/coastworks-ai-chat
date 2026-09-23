@@ -14,26 +14,62 @@ services:
       - key: PYTHON_VERSION
         value: 3.13.7
       - key: ENVIRONMENT
-        value: development
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: ENVIRONMENT
       - key: APP_ORIGIN
-        value: https://coastworks-ai-chat.vercel.app
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: APP_ORIGIN
       - key: PUBLIC_API_ORIGIN
-        value: https://coastworks-ai-chat-api.onrender.com
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: PUBLIC_API_ORIGIN
       - key: SECRET_KEY
-        generateValue: true
-      - key: LLM_PROVIDER
-        value: gemini
-      - key: LLM_MODEL
-        value: gemini-2.5-flash
-      - key: EMBEDDINGS_PROVIDER
-        value: gemini
-      - key: EMBEDDINGS_MODEL
-        value: gemini-embedding-001
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: SECRET_KEY
       - key: DATABASE_URL
-        sync: false
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: DATABASE_URL
+      - key: LLM_PROVIDER
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: LLM_PROVIDER
+      - key: LLM_MODEL
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: LLM_MODEL
+      - key: EMBEDDINGS_PROVIDER
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: EMBEDDINGS_PROVIDER
+      - key: EMBEDDINGS_MODEL
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: EMBEDDINGS_MODEL
       - key: GEMINI_API_KEY
-        sync: false
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: GEMINI_API_KEY
       - key: CLOUDFLARE_ACCOUNT_ID
-        sync: false
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: CLOUDFLARE_ACCOUNT_ID
       - key: CLOUDFLARE_API_TOKEN
-        sync: false
+        fromService:
+          name: coastworks-ai-chat-api
+          type: web
+          envVarKey: CLOUDFLARE_API_TOKEN
