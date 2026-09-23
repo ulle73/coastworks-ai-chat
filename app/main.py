@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -36,8 +38,20 @@ log = logging.getLogger("coastworks.api")
 @asynccontextmanager
 async def lifespan(app):
     await pool.open(wait=True)
-    yield
-    await pool.close()
+    worker_task = None
+    if settings.EMBEDDED_WORKER:
+        from app.worker import run_loop
+
+        worker_task = asyncio.create_task(run_loop(), name="embedded-worker")
+        log.info("embedded_worker_started")
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+        await pool.close()
 
 
 app = FastAPI(
