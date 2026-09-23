@@ -181,3 +181,35 @@ async def test_recursive_sitemap_index_pages_are_crawled():
     assert "https://company.example/contact" in urls
     assert "https://company.example/sitemap_pages.xml" in fetch.urls
     renderer.render.assert_not_called()
+
+
+class CanonicalDomainFetch(Fetch):
+    async def get(self, url, **kwargs):
+        self.urls.append(url)
+        if url == "https://legacy.example/":
+            assert kwargs.get("canonical_redirect") is True
+            return 200, "", "https://www.current.example/sv"
+        if url == "https://www.current.example/robots.txt":
+            return 200, self.robots, url
+        if url == "https://www.current.example/sitemap.xml":
+            return 404, "", url
+        return (200, self.pages[url], url) if url in self.pages else (404, "", url)
+
+
+async def test_initial_domain_redirect_rebases_crawl_to_canonical_origin():
+    renderer = AsyncMock()
+    fetch = CanonicalDomainFetch(
+        {
+            "https://www.current.example/sv": html(
+                "Current",
+                links='<nav><a href="/sv/contact">Kontakt</a></nav>',
+            ),
+            "https://www.current.example/sv/contact": html("Kontakt"),
+        }
+    )
+    result = await crawl("https://legacy.example/", fetch, renderer)
+    urls = {page["url"] for page in result.pages}
+    assert "https://www.current.example/sv" in urls
+    assert "https://www.current.example/sv/contact" in urls
+    assert "https://www.current.example/robots.txt" in fetch.urls
+    renderer.render.assert_not_called()
