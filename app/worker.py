@@ -114,6 +114,18 @@ async def process(job):
     try:
         async with asyncio.timeout(170):
             result = await crawl(job["bot"]["url"])
+            log.info(
+                "crawl_quality job=%s pages=%s words=%s attempted=%s discovered=%s rendered=%s failed=%s denied=%s success_ratio=%s",
+                job["id"],
+                result.quality()["pages"],
+                result.quality()["words"],
+                result.quality()["attempted"],
+                result.quality()["discovered"],
+                result.quality()["rendered"],
+                result.quality()["failed"],
+                result.quality()["denied"],
+                result.quality()["success_ratio"],
+            )
             async with transaction() as db:
                 sources = await (
                     await db.execute(
