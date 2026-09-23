@@ -106,3 +106,78 @@ def test_invalid_embeddings_rejected():
     assert not valid_vectors([[0, 0]], 1)
     assert not valid_vectors([[1], [1, 2]], 2)
     assert valid_vectors([[1, 2]], 1)
+
+
+async def test_short_server_rendered_navigation_page_is_preserved_without_browser():
+    renderer = AsyncMock()
+    home = (
+        "<html><title>Hem</title><body>"
+        '<nav><a href="/contact">Kontakt</a></nav>'
+        "<main>" + ("golf företag presentkort information " * 180) + "</main>"
+        '<script src="/theme.js"></script></body></html>'
+    )
+    contact = (
+        "<html><title>Kontakt</title><body><main>"
+        "Kontakta oss via info@example.com så hjälper vi dig."
+        "</main><script src=\"/theme.js\"></script></body></html>"
+    )
+    result = await crawl(
+        "https://company.example/",
+        Fetch(
+            {
+                "https://company.example/": home,
+                "https://company.example/contact": contact,
+            }
+        ),
+        renderer,
+    )
+    urls = {page["url"] for page in result.pages}
+    assert "https://company.example/contact" in urls
+    assert result.quality()["core_total"] == 1
+    assert result.quality()["core_succeeded"] == 1
+    assert result.quality()["core_failed"] == 0
+    renderer.render.assert_not_called()
+
+
+class SitemapIndexFetch(Fetch):
+    async def get(self, url, **kwargs):
+        self.urls.append(url)
+        if url.endswith("/robots.txt"):
+            return 200, self.robots, url
+        if url.endswith("/sitemap.xml"):
+            return (
+                200,
+                """<?xml version="1.0"?>
+                <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                  <sitemap><loc>https://company.example/sitemap_pages.xml</loc></sitemap>
+                </sitemapindex>""",
+                url,
+            )
+        if url.endswith("/sitemap_pages.xml"):
+            return (
+                200,
+                """<?xml version="1.0"?>
+                <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                  <url><loc>https://company.example/about</loc></url>
+                  <url><loc>https://company.example/contact</loc></url>
+                </urlset>""",
+                url,
+            )
+        return (200, self.pages[url], url) if url in self.pages else (404, "", url)
+
+
+async def test_recursive_sitemap_index_pages_are_crawled():
+    renderer = AsyncMock()
+    fetch = SitemapIndexFetch(
+        {
+            "https://company.example/": html("Hem"),
+            "https://company.example/about": html("Om oss"),
+            "https://company.example/contact": html("Kontakt"),
+        }
+    )
+    result = await crawl("https://company.example/", fetch, renderer)
+    urls = {page["url"] for page in result.pages}
+    assert "https://company.example/about" in urls
+    assert "https://company.example/contact" in urls
+    assert "https://company.example/sitemap_pages.xml" in fetch.urls
+    renderer.render.assert_not_called()
