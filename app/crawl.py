@@ -208,7 +208,8 @@ async def crawl(start_url, fetcher=None, renderer=None):
             continue
     hashes = set()
     result = CrawlResult()
-    while queue and result.attempted < settings.CRAWL_PAGES:
+    max_attempts = min(max(settings.CRAWL_PAGES * 3, 12), 30)
+    while queue and len(result.pages) < settings.CRAWL_PAGES and result.attempted < max_attempts:
         url = queue.popleft()
         result.attempted += 1
         if not robots.can_fetch(USER_AGENT, url):
@@ -247,14 +248,30 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 ):
                     continue
                 candidates.append(clean)
-            candidates.sort(
-                key=lambda u: (
-                    0
-                    if re.search(r"kontakt|contact|about|om-oss|service|tjanst|produkt|product|faq", u, re.I)
-                    else 1,
-                    len(u),
+            def priority(candidate):
+                path = urlsplit(candidate).path.lower()
+                # Prefer shallow informational/navigation pages over transactional/noisy URLs.
+                info_hint = bool(
+                    re.search(
+                        r"contact|kontakt|about|om-oss|service|tjanst|faq|help|support|"
+                        r"company|business|foretag|företag|gift|present|pricing|price|pris|"
+                        r"terms|villkor|policy|shipping|leverans|returns|retur|pages/",
+                        path,
+                        re.I,
+                    )
                 )
-            )
+                transactional = bool(
+                    re.search(r"/cart|/checkout|/account|/login|/search|/collections/", path, re.I)
+                )
+                depth = len([part for part in path.split("/") if part])
+                return (
+                    1 if transactional else 0,
+                    0 if info_hint else 1,
+                    depth,
+                    len(path),
+                )
+
+            candidates.sort(key=priority)
             for clean in candidates:
                 if clean not in seen and len(seen) < 100:
                     seen.add(clean)
