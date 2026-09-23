@@ -213,3 +213,51 @@ async def test_initial_domain_redirect_rebases_crawl_to_canonical_origin():
     assert "https://www.current.example/sv/contact" in urls
     assert "https://www.current.example/robots.txt" in fetch.urls
     renderer.render.assert_not_called()
+
+
+class GeoLocalizedCanonicalFetch(Fetch):
+    async def get(self, url, **kwargs):
+        self.urls.append(url)
+        if url == "https://brand.se/robots.txt":
+            return 200, self.robots, url
+        if url == "https://brand.se/":
+            return (
+                200,
+                """<html><head>
+                <link rel="alternate" hreflang="de-DE" href="https://www.brand.com/de">
+                <link rel="alternate" hreflang="sv-SE" href="https://www.brand.com/sv">
+                </head><body>Deutsch</body></html>""",
+                "https://www.brand.com/de",
+            )
+        if url == "https://www.brand.com/robots.txt":
+            return 200, self.robots, url
+        if url == "https://www.brand.com/sitemap.xml":
+            return (
+                200,
+                """<?xml version="1.0"?>
+                <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                  <url><loc>https://www.brand.com/de/contact</loc></url>
+                  <url><loc>https://www.brand.com/sv/contact</loc></url>
+                </urlset>""",
+                url,
+            )
+        return (200, self.pages[url], url) if url in self.pages else (404, "", url)
+
+
+async def test_cctld_redirect_uses_matching_hreflang_and_stays_in_locale():
+    renderer = AsyncMock()
+    fetch = GeoLocalizedCanonicalFetch(
+        {
+            "https://www.brand.com/sv": html(
+                "Svenska",
+                links='<nav><a href="/sv/contact">Kontakt</a><a href="/de/contact">Kontakt DE</a></nav>',
+            ),
+            "https://www.brand.com/sv/contact": html("Kontakt Sverige"),
+            "https://www.brand.com/de/contact": html("Kontakt Deutschland"),
+        }
+    )
+    result = await crawl("https://brand.se/", fetch, renderer)
+    urls = {page["url"] for page in result.pages}
+    assert "https://www.brand.com/sv" in urls
+    assert "https://www.brand.com/sv/contact" in urls
+    assert "https://www.brand.com/de/contact" not in urls
