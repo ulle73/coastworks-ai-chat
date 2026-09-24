@@ -12,3 +12,8 @@ web/.local-*.mjs
 web/*.tsbuildinfo
 *.log
 .local/
+
+# Generated knowledge-eval outputs. Keep corpus.json and questions.json tracked.
+evals/results.json
+evals/*-results.json
+evals/verification-ablation.json
