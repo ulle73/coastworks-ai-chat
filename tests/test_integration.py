@@ -179,7 +179,7 @@ async def test_real_rag_path_scopes_context_history_and_current_version(monkeypa
     import json
     from types import SimpleNamespace
 
-    from app.knowledge import answer
+    from app.knowledge import Evidence, GroundedAnswer, Ranking, answer
 
     async with transaction() as db:
         bot_a, _ = await seed(db, "a")
@@ -203,11 +203,13 @@ async def test_real_rag_path_scopes_context_history_and_current_version(monkeypa
     # A bot snapshot may predate a concurrent refresh. Retrieval must read the current pointer atomically.
     bot["active_version"] = uuid.uuid4()
     embeddings = SimpleNamespace(aembed_query=AsyncMock(return_value=[1, 0, 0]))
-    llm = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(content="Alice svar")))
+    invoke = AsyncMock(side_effect=[Ranking(ids=[0]), GroundedAnswer(
+        answer="Alice svar", evidence=[Evidence(id=0)])])
+    llm = SimpleNamespace(with_structured_output=lambda schema: SimpleNamespace(ainvoke=invoke))
     monkeypatch.setattr("app.knowledge.get_embeddings", lambda: embeddings)
-    monkeypatch.setattr("app.knowledge.get_llm", lambda: llm)
+    monkeypatch.setattr("app.knowledge.get_llm", lambda **kwargs: llm)
     response = await answer(bot, "Hej", "shared")
-    prompt = json.loads(llm.ainvoke.call_args.args[0][1].content)
+    prompt = json.loads(invoke.call_args.args[0][1].content)
     assert "ALICE_PUBLIC" in str(prompt)
     assert "BOB" not in str(prompt)
     assert response["answer"] == "Alice svar"

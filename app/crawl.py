@@ -42,6 +42,7 @@ class CrawlResult:
     core_total: int = 0
     core_succeeded: int = 0
     core_failed: int = 0
+    budget_exhausted: bool = False
 
     def quality(self):
         words = sum(len(p["content"].split()) for p in self.pages)
@@ -61,6 +62,7 @@ class CrawlResult:
 
         return {
             "passed": sufficient,
+            "budget_exhausted": self.budget_exhausted,
             "pages": len(self.pages),
             "words": words,
             "attempted": self.attempted,
@@ -452,7 +454,7 @@ class Renderer:
             await crawler.close()
 
 
-async def crawl(start_url, fetcher=None, renderer=None):
+async def crawl(start_url, fetcher=None, renderer=None, *, full=False):
     """Crawl a site with sitemap-first discovery, bounded concurrency and retries.
 
     Strategy:
@@ -462,10 +464,12 @@ async def crawl(start_url, fetcher=None, renderer=None):
     4. Crawl the resulting frontier concurrently with bounded retries.
     5. Escalate only convincing client-rendered shells to a browser renderer.
     """
+    page_budget = settings.KNOWLEDGE_PAGES if full else settings.CRAWL_PAGES
+    seconds = settings.KNOWLEDGE_SECONDS if full else settings.CRAWL_SECONDS
     if fetcher is None:
         async with Fetcher() as fetcher:
-            async with asyncio.timeout(settings.CRAWL_SECONDS):
-                return await crawl(start_url, fetcher, renderer)
+            async with asyncio.timeout(seconds):
+                return await crawl(start_url, fetcher, renderer, full=full)
 
     supplied_renderer = renderer is not None
     renderer = renderer or Renderer()
@@ -582,7 +586,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
         sitemap_roots,
         root,
         max_sitemaps=24,
-        max_urls=max(500, settings.CRAWL_PAGES * 10),
+        max_urls=max(500, page_budget * 10),
     )
     sitemap_candidates = [url for url in sitemap_candidates if in_locale_scope(url)]
 
@@ -643,14 +647,15 @@ async def crawl(start_url, fetcher=None, renderer=None):
             minimum_words = 5 if is_core else 45
             stored = False
             if page and len(text.split()) >= minimum_words:
-                page["content"] = page["content"][:24000]
+                if len(page["content"]) > (200000 if full else 24000):
+                    raise CrawlFailure("PAGE_TEXT_BUDGET_EXCEEDED")
                 fingerprint = hashlib.sha256(page["content"].encode()).hexdigest()
                 # Navigation pages are few and user-visible; preserve them even if
                 # their body text duplicates another page (e.g. a short contact page).
                 identity = (final, fingerprint) if is_core else fingerprint
                 if identity not in hashes:
                     hashes.add(identity)
-                    result.pages.append(page)
+                    result.pages.append({key: value for key, value in page.items() if key != "html"})
                     stored = True
 
             if is_core:
@@ -716,13 +721,13 @@ async def crawl(start_url, fetcher=None, renderer=None):
     enqueue_many(sorted(home["links"], key=page_priority))
 
     core_set = set(core_urls)
-    max_attempts = min(max(settings.CRAWL_PAGES * 2, 30), 200)
+    max_attempts = max(page_budget * 2, 30)
     cursor = 0
 
     while cursor < len(frontier):
         if result.attempted >= max_attempts:
             break
-        if len(result.pages) >= settings.CRAWL_PAGES and not any(
+        if len(result.pages) >= page_budget and not any(
             candidate in core_set and candidate not in attempted_urls
             for candidate in frontier[cursor:]
         ):
@@ -730,7 +735,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
 
         remaining_attempts = max_attempts - result.attempted
         # A moderate batch keeps memory bounded while allowing useful concurrency.
-        batch_size = min(18, remaining_attempts, len(frontier) - cursor)
+        batch_size = min(18, remaining_attempts, len(frontier) - cursor, max(1, page_budget - len(result.pages)))
         batch = frontier[cursor : cursor + batch_size]
         cursor += batch_size
 
@@ -748,6 +753,7 @@ async def crawl(start_url, fetcher=None, renderer=None):
                 continue
             enqueue_many(sorted(item["links"], key=page_priority))
 
+    result.budget_exhausted = cursor < len(frontier)
     result.discovered = len(queued)
     quality = result.quality()
     log.info(

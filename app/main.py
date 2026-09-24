@@ -365,6 +365,11 @@ async def publish(bot_id: uuid.UUID, request: Request):
         await db.execute(
             "UPDATE bots SET published=true WHERE id=%s AND active_version IS NOT NULL", (bot_id,)
         )
+        if not bot["published"]:
+            await db.execute(
+                "INSERT INTO jobs(id,bot_id) VALUES(%s,%s) ON CONFLICT DO NOTHING",
+                (uuid.uuid4(), bot_id),
+            )
     return {"published": True}
 
 

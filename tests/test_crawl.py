@@ -119,7 +119,7 @@ async def test_short_server_rendered_navigation_page_is_preserved_without_browse
     contact = (
         "<html><title>Kontakt</title><body><main>"
         "Kontakta oss via info@example.com så hjälper vi dig."
-        "</main><script src=\"/theme.js\"></script></body></html>"
+        '</main><script src="/theme.js"></script></body></html>'
     )
     result = await crawl(
         "https://company.example/",
@@ -261,3 +261,20 @@ async def test_cctld_redirect_uses_matching_hreflang_and_stays_in_locale():
     assert "https://www.brand.com/sv" in urls
     assert "https://www.brand.com/sv/contact" in urls
     assert "https://www.brand.com/de/contact" not in urls
+
+
+async def test_full_ingestion_has_independent_budget_and_reports_partial_preview(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "CRAWL_PAGES", 3)
+    monkeypatch.setattr(settings, "KNOWLEDGE_PAGES", 40)
+    root = "https://company.example/"
+    links = "".join(f'<a href="/info-{i}">Läs sida {i}</a>' for i in range(24))
+    pages = {root: html("Startsida", links=links)}
+    pages.update({root + f"info-{i}": html(f"Information {i}") for i in range(24)})
+    preview = await crawl(root, Fetch(pages))
+    full = await crawl(root, Fetch(pages), full=True)
+    assert len(preview.pages) < len(full.pages) == 25
+    assert preview.quality()["budget_exhausted"] is True
+    assert full.quality()["budget_exhausted"] is False
+    assert all("html" not in page for page in full.pages)

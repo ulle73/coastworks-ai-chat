@@ -34,7 +34,9 @@ def requires_browser_rendering(
         return False
 
     soup = BeautifulSoup(html, "html.parser")
-    mount = soup.find(id="root") or soup.find(id="app")
+    # Next.js app-router shells need not have a #root/#app mount.
+    next_bundle = soup.find("script", src=re.compile(r"/_next/"))
+    mount = soup.find(id="root") or soup.find(id="app") or (soup.find("main") if next_bundle else None)
     if mount is None:
         return False
 
@@ -47,7 +49,7 @@ def requires_browser_rendering(
         src = str(script.get("src") or "")
         if script_type == "module":
             return True
-        if src and _CLIENT_BUNDLE_RE.search(src):
+        if src and (_CLIENT_BUNDLE_RE.search(src) or "/_next/" in src):
             return True
 
     return False

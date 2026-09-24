@@ -28,7 +28,7 @@ async def database(monkeypatch):
         open=False,
         min_size=1,
         max_size=4,
-        kwargs={"row_factory": dict_row},
+        kwargs={"row_factory": dict_row, "prepare_threshold": None},
         configure=configure,
     )
     monkeypatch.setattr(database_module, "pool", pool)

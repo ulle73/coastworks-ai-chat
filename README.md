@@ -51,3 +51,7 @@ Databastester kräver en **separat databas vars namn innehåller `test`**. De t�
 - [Design och visuell kontroll](docs/design/DESIGN.md)
 
 Målet är cirka en minut på vanliga företagssidor. Det är ingen garanti. Ett misslyckat eller tunt underlag ger ett begripligt fel och erbjudande om hjälp, aldrig en låtsasfärdig bot.
+
+## Knowledge quality
+
+Hybrid retrieval, ingestion profiles, eval methodology, measured results and rollout requirements are documented in [docs/knowledge-quality.md](docs/knowledge-quality.md). Run the reproducible provider eval with `uv run python -m evals.run --check` against an isolated test database.

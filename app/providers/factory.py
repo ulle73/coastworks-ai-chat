@@ -4,7 +4,7 @@ from app.config import settings
 from functools import lru_cache
 
 @lru_cache
-def get_llm():
+def get_llm(*, max_tokens=None, thinking_budget=None, temperature=None):
     """
     Factory for LLM - returns LangChain chat model based on config.
     
@@ -20,8 +20,8 @@ def get_llm():
         return ChatOpenAI(
             model=settings.LLM_MODEL,
             api_key=settings.OPENAI_API_KEY,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS
+            temperature=settings.LLM_TEMPERATURE if temperature is None else temperature,
+            max_tokens=max_tokens or settings.LLM_MAX_TOKENS
         )
     
     elif provider == "anthropic":
@@ -31,8 +31,8 @@ def get_llm():
         return ChatAnthropic(
             model=settings.LLM_MODEL,
             api_key=settings.ANTHROPIC_API_KEY,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS
+            temperature=settings.LLM_TEMPERATURE if temperature is None else temperature,
+            max_tokens=max_tokens or settings.LLM_MAX_TOKENS
         )
     
     elif provider == "azure":
@@ -43,8 +43,8 @@ def get_llm():
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT or settings.LLM_MODEL,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS
+            temperature=settings.LLM_TEMPERATURE if temperature is None else temperature,
+            max_tokens=max_tokens or settings.LLM_MAX_TOKENS
         )
 
     elif provider == "gemini":
@@ -64,10 +64,12 @@ def get_llm():
 
         kwargs = {
             "model": settings.LLM_MODEL,
-            "temperature": settings.LLM_TEMPERATURE,
-            "max_tokens": settings.LLM_MAX_TOKENS,
+            "temperature": settings.LLM_TEMPERATURE if temperature is None else temperature,
+            "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
             "max_retries": 2,
         }
+        if thinking_budget is not None:
+            kwargs["thinking_budget"] = thinking_budget
         if settings.GEMINI_USE_VERTEX_AI:
             kwargs.update({
                 "vertexai": True,
@@ -88,7 +90,7 @@ def get_llm():
         return ChatOllama(
             model=settings.LLM_MODEL,
             base_url=settings.OLLAMA_BASE_URL,
-            temperature=settings.LLM_TEMPERATURE
+            temperature=settings.LLM_TEMPERATURE if temperature is None else temperature
         )
     
     else:

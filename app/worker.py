@@ -91,7 +91,16 @@ async def publish(job, result, chunks, vectors):
             raise CrawlFailure("INDEX_READBACK_FAILED")
         await db.execute(
             "UPDATE bots SET active_version=%s,quality=%s,state='ready',error_code=NULL,refreshed_at=now() WHERE id=%s",
-            (job["id"], Jsonb(result.quality()), job["bot_id"]),
+            (
+                job["id"],
+                Jsonb(
+                    {
+                        **result.quality(),
+                        "ingestion_profile": "full" if job["bot"].get("published") else "preview",
+                    }
+                ),
+                job["bot_id"],
+            ),
         )
         # robots canonicalization may legitimately upgrade http or add/remove www.
         from app.security import origin
@@ -107,13 +116,20 @@ async def publish(job, result, chunks, vectors):
             "UPDATE jobs SET state='done',finished_at=now(),lease_until=NULL WHERE id=%s", (job["id"],)
         )
         await db.execute("DELETE FROM chunks WHERE bot_id=%s AND version<>%s", (job["bot_id"], job["id"]))
+        if not job["bot"].get("published"):
+            # Publication can race with a preview refresh already in flight.
+            await db.execute(
+                "INSERT INTO jobs(id,bot_id) SELECT gen_random_uuid(),id FROM bots WHERE id=%s AND published ON CONFLICT DO NOTHING",
+                (job["bot_id"],),
+            )
 
 
 async def process(job):
     renewal = asyncio.create_task(heartbeat(job))
     try:
-        async with asyncio.timeout(170):
-            result = await crawl(job["bot"]["url"])
+        full = bool(job["bot"].get("published"))
+        async with asyncio.timeout(settings.KNOWLEDGE_SECONDS + 900 if full else 170):
+            result = await crawl(job["bot"]["url"], full=full)
             log.info(
                 "crawl_quality job=%s pages=%s words=%s attempted=%s discovered=%s rendered=%s failed=%s denied=%s success_ratio=%s core=%s/%s core_failed=%s",
                 job["id"],
@@ -143,6 +159,7 @@ async def process(job):
             chunks, vectors = await build(
                 result.pages + [{**s, "metadata": {"source_type": "document"}} for s in sources],
                 job["bot_id"],
+                full=full,
             )
             if renewal.done():
                 renewal.result()
@@ -150,6 +167,8 @@ async def process(job):
         log.info("job_complete job=%s pages=%s", job["id"], len(result.pages))
     except Exception as exc:
         code = exc.code if isinstance(exc, CrawlFailure) else "BUILD_FAILED"
+        if isinstance(exc, ValueError) and str(exc) in {"INDEX_BUDGET_EXCEEDED", "INVALID_EMBEDDINGS"}:
+            code = str(exc)
         # No provider exceptions, source text, URLs, emails or secrets in logs.
         log.warning("job_failed job=%s code=%s type=%s", job["id"], code, type(exc).__name__)
         async with transaction() as db:
@@ -180,7 +199,8 @@ async def maintenance():
         )
         # Only published bots get weekly refresh; failed refresh keeps the last good snapshot.
         await db.execute("""INSERT INTO jobs(id,bot_id)
-          SELECT gen_random_uuid(),b.id FROM bots b WHERE b.published AND b.refreshed_at<now()-interval '7 days'
+          SELECT gen_random_uuid(),b.id FROM bots b WHERE b.published AND (b.refreshed_at<now()-interval '7 days'
+          OR coalesce(b.quality->>'ingestion_profile','preview')<>'full')
           AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.bot_id=b.id AND j.created_at>now()-interval '1 day')
           ON CONFLICT DO NOTHING""")
 

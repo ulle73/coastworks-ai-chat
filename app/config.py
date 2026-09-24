@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gemini-2.5-flash"
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 900
+    RAG_MAX_TOKENS: int = 2400
+    RAG_THINKING_BUDGET: int | None = 256
     EMBEDDINGS_PROVIDER: Literal["gemini", "openai"] = "gemini"
     EMBEDDINGS_MODEL: str = "gemini-embedding-001"
     GEMINI_API_KEY: str = ""
@@ -34,6 +36,14 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = "Coastworks <hello@localhost>"
     CRAWL_PAGES: int = 8
     CRAWL_SECONDS: int = 110
+    KNOWLEDGE_PAGES: int = 500
+    KNOWLEDGE_SECONDS: int = 1200
+    KNOWLEDGE_CHUNKS: int = 12000
+    PREVIEW_CHUNKS: int = 300
+    EMBEDDING_BATCH_SIZE: int = 64
+    RETRIEVAL_CANDIDATES: int = 32
+    RERANK_CANDIDATES: int = 24
+    ANSWER_CHUNKS: int = 8
     PREVIEW_HOURS: int = 24
     GLOBAL_CRAWLS_PER_DAY: int = 100
     GLOBAL_MESSAGES_PER_DAY: int = 2000
@@ -43,6 +53,21 @@ class Settings(BaseSettings):
     def production_contract(self):
         if not 1 <= self.CRAWL_PAGES <= 100 or not 10 <= self.CRAWL_SECONDS <= 180:
             raise ValueError("Crawl budget outside supported bounds")
+        if not (1 <= self.KNOWLEDGE_PAGES <= 10000 and 60 <= self.KNOWLEDGE_SECONDS <= 7200):
+            raise ValueError("Knowledge crawl budget outside supported bounds")
+        if not (1 <= self.PREVIEW_CHUNKS <= self.KNOWLEDGE_CHUNKS <= 100000):
+            raise ValueError("Invalid index budgets")
+        if not (
+            1 <= self.ANSWER_CHUNKS <= 12
+            and self.ANSWER_CHUNKS <= self.RERANK_CANDIDATES <= self.RETRIEVAL_CANDIDATES <= 100
+        ):
+            raise ValueError("Invalid retrieval budgets")
+        if not 512 <= self.RAG_MAX_TOKENS <= 8192:
+            raise ValueError("Invalid structured answer token budget")
+        if self.RAG_THINKING_BUDGET is not None and not -1 <= self.RAG_THINKING_BUDGET <= 32768:
+            raise ValueError("Invalid thinking budget")
+        if not 1 <= self.EMBEDDING_BATCH_SIZE <= 128:
+            raise ValueError("Invalid embedding batch size")
         if self.ENVIRONMENT == "production":
             if not self.APP_ORIGIN.startswith("https://") or len(self.SECRET_KEY) < 40:
                 raise ValueError("Production requires HTTPS and a long random SECRET_KEY")

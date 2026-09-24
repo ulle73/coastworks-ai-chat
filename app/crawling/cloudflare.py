@@ -351,6 +351,11 @@ class CloudflareBrowserCrawler:
             or extraction_soup.find("article")
             or extraction_soup.find("body")
         )
+        if main_content:
+            for heading in main_content.find_all(re.compile(r"^h[1-6]$")):
+                heading.replace_with("\n" + "#" * int(heading.name[1]) + " " + heading.get_text(" ", strip=True) + "\n")
+            for question in main_content.find_all("summary"):
+                question.replace_with("\n### " + question.get_text(" ", strip=True) + "\n")
         content = main_content.get_text(separator="\n", strip=True) if main_content else ""
         content = re.sub(r"\n{3,}", "\n\n", content)
         content = re.sub(r" {2,}", " ", content).strip()
