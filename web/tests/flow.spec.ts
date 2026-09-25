@@ -83,6 +83,9 @@ test("one-line widget isolates chat and passes a scoped session into its iframe"
   const bot = "12345678-1234-4234-8234-123456789abc";
   const origin = "http://127.0.0.1:4173";
   const customerOrigin = "http://127.0.0.1:4174";
+  // Chromium treats the intercepted customer page as public; allow this test fixture
+  // to load the real widget from our loopback dev server. Production uses public HTTPS.
+  await page.context().grantPermissions(["local-network-access"], { origin: customerOrigin });
   await page.route(customerOrigin + "/", (r) =>
     r.fulfill({
       contentType: "text/html",
@@ -104,10 +107,11 @@ test("one-line widget isolates chat and passes a scoped session into its iframe"
     });
   });
   await page.goto(customerOrigin + "/");
-  // Closed shadow DOM intentionally hides controls from host DOM selectors; use accessibility snapshot via coordinates.
+  // Closed shadow DOM intentionally hides controls from host DOM selectors. The
+  // launcher remains keyboard reachable from the customer page.
   await expect(page.locator(`#cw-${bot}`)).toBeAttached();
-  const size = page.viewportSize()!;
-  await page.mouse.click(size.width - 100, size.height - 45);
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
   // Playwright cannot pierce a closed root: find the isolated frame by its URL instead.
   await expect
     .poll(() => page.frames().some((f) => f.url().includes(`/embed/${bot}`)))

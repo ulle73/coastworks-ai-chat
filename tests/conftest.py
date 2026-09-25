@@ -34,6 +34,6 @@ async def database(monkeypatch):
     monkeypatch.setattr(database_module, "pool", pool)
     await pool.open(wait=True)
     async with transaction() as db:
-        await db.execute("TRUNCATE bots,rate_limits,managed_requests CASCADE")
+        await db.execute("TRUNCATE bots,rate_limits,managed_requests,billing_events CASCADE")
     yield
     await pool.close()

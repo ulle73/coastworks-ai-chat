@@ -2,6 +2,20 @@
 
 ## Arkitektur
 
+Slutkörning 2026-09-24, sparad i `evals/results.json`: 40 frågor med riktiga modellanrop och embeddings. Samma baseline återanvändes och båda varianterna bedömdes tillsammans.
+
+| Mått | Före | Efter |
+| --- | ---: | ---: |
+| Korrekthet | 37/40 (92,5 %) | 40/40 (100 %) |
+| Groundedness | 40/40 | 40/40 |
+| Rätt faktapassage i underlaget | 33/35 | 35/35 |
+| Rätt källgrupper | 35/35 | 35/35 |
+| Median svarstid | 2,50 s | 3,91 s |
+| Längsta svarstid | 9,51 s | 6,38 s |
+| Uppskattad LLM-kostnad per fråga | 0,00130 USD | 0,00303 USD |
+
+Kostnaden summerar uppmätta input-/outputtokens i rewriting, reranking och svarsgenerering, inklusive thinking. Beräknad med [Gemini 2.5 Flash-priset](https://ai.google.dev/gemini-api/docs/pricing) 0,30 USD/miljon inputtokens och 2,50 USD/miljon outputtokens. Embeddings, ingestion, lagring och evaldomaren ingår inte. Körningen använder cachelagrade riktiga embeddings; tiderna är lokala mätningar och inte ett produktions-SLA. 56 backendtester passerade, inklusive databas- och isoleringstester via lokal PGlite/pgvector. Den dyrare retrievalkedjan är avsiktlig och måste följas upp mot faktisk kundtrafik.
+
 - PostgreSQL kör två oberoende kandidatfrågor mot samma tenant och aktiva indexversion i en SQL-snapshot: exakt pgvector-sökning och GIN-indexerad fulltextsökning (`swedish` + `simple`). Fulltextsökning kan hitta material utanför vectorurvalet, även vid byte av embeddingmodell.
 - Kandidatlistorna kombineras med reciprocal rank fusion, k=60. 32 kandidater per gren, högst 24 till rerankern och 8 till svarsgenerering. Dessa är kostnadstak; inga relevanströsklar eller domänspecifika vikter används. Fulltextsökningen använder PostgreSQLs `ts_rank_cd`, inte BM25.
 - Befintlig Gemini/OpenAI-provider gör en strukturerad innehållsbedömning av kandidaterna. Följdfrågor skrivs om separat; historik används för referenter, aldrig som faktakälla. En ny fråga utan historik behöver ingen rewriting. Strukturerade RAG-steg använder temperatur 0. Gemini 2.5 Flash får en begränsad resonemangsbudget på 256 tokens per steg. En kontrollerad jämförelse på samma kandidater visade att helt avstängt resonemang missade en relevant presentkortssida medan 256-budgeten hittade den; påslaget i reranking var cirka 0,23 sekunder i det fallet.

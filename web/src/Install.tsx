@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { ArrowRight, Check, Copy } from "lucide-react";
 import { api, type Bot } from "./api";
+import { Billing } from "./Billing";
 
 export function Install({
   bot,
@@ -16,6 +17,7 @@ export function Install({
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [published, setPublished] = useState(bot.published);
+  const [paid, setPaid] = useState(false);
   useEffect(() => {
     api<{ code: string; published: boolean }>(
       `/api/bots/${bot.id}/installation`,
@@ -98,6 +100,7 @@ export function Install({
       )}
       {stage === "code" && (
         <>
+          <Billing botId={bot.id} onAccess={setPaid} />
           <h2>
             {published
               ? "Din assistent är på plats."
@@ -127,7 +130,7 @@ export function Install({
             </button>
             <button
               className="secondary"
-              disabled={busy || published}
+              disabled={busy || published || !paid}
               onClick={publish}
             >
               {published

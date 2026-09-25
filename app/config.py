@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     APP_ORIGIN: str = "http://localhost:8000"
     PUBLIC_API_ORIGIN: str = ""
     EMBEDDED_WORKER: bool = False
+    BILLING_ENABLED: bool = False
+    STRIPE_API_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_ID: str = ""
+    STRIPE_PORTAL_CONFIGURATION_ID: str = ""
+    STRIPE_TAX_BEHAVIOR: Literal["inclusive", "exclusive"] = "inclusive"
+    STRIPE_AUTOMATIC_TAX: bool = False
+    STRIPE_LIVEMODE: bool = False
     SECRET_KEY: str = "development-only-change-before-deploy-0123456789"
     LLM_PROVIDER: Literal["gemini", "openai"] = "gemini"
     LLM_MODEL: str = "gemini-2.5-flash"
@@ -51,6 +59,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_contract(self):
+        if self.BILLING_ENABLED and not all(
+            (
+                self.STRIPE_API_KEY,
+                self.STRIPE_WEBHOOK_SECRET,
+                self.STRIPE_PRICE_ID,
+                self.STRIPE_PORTAL_CONFIGURATION_ID,
+            )
+        ):
+            raise ValueError("Billing requires Stripe credentials, price and portal configuration")
         if not 1 <= self.CRAWL_PAGES <= 100 or not 10 <= self.CRAWL_SECONDS <= 180:
             raise ValueError("Crawl budget outside supported bounds")
         if not (1 <= self.KNOWLEDGE_PAGES <= 10000 and 60 <= self.KNOWLEDGE_SECONDS <= 7200):
@@ -69,6 +86,10 @@ class Settings(BaseSettings):
         if not 1 <= self.EMBEDDING_BATCH_SIZE <= 128:
             raise ValueError("Invalid embedding batch size")
         if self.ENVIRONMENT == "production":
+            if not self.BILLING_ENABLED or not self.STRIPE_LIVEMODE:
+                raise ValueError("Production requires live billing")
+            if not self.STRIPE_API_KEY.startswith(("rk_live_", "sk_live_")):
+                raise ValueError("Production requires a live Stripe key")
             if not self.APP_ORIGIN.startswith("https://") or len(self.SECRET_KEY) < 40:
                 raise ValueError("Production requires HTTPS and a long random SECRET_KEY")
             if self.PUBLIC_API_ORIGIN and not self.PUBLIC_API_ORIGIN.startswith("https://"):

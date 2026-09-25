@@ -46,6 +46,7 @@ Databastester kr채ver en **separat databas vars namn inneh책ller `test`**. De t�
 - [Arkitektur och viktiga avv채gningar](docs/ARCHITECTURE.md)
 - [Vad som faktiskt 책teranv채nds](docs/REUSE.md)
 - [Drift, kostnadsgr채nser och lansering](docs/OPERATIONS.md)
+- [Stripe-abonnemang, moms och produktionskonfiguration](docs/BILLING.md)
 - [Managed som levererad tj채nst](docs/MANAGED.md)
 - [Verifieringsresultat och kvarvarande produktionsgrindar](docs/VERIFICATION.md)
 - [Design och visuell kontroll](docs/design/DESIGN.md)

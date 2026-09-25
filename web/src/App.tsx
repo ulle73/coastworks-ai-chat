@@ -5,6 +5,7 @@ import { Chat } from "./Chat";
 import { Install } from "./Install";
 import { Managed } from "./Managed";
 import { Access } from "./Access";
+import { Legal } from "./Legal";
 
 function Preview({
   botId,
@@ -171,9 +172,14 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [botId, setBotId] = useState(
-    () => sessionStorage.getItem("cw_bot") || "",
+    () =>
+      new URLSearchParams(location.search).get("bot") ||
+      sessionStorage.getItem("cw_bot") ||
+      "",
   );
-  const [confirmed, setConfirmed] = useState(false);
+  const [confirmed, setConfirmed] = useState(() =>
+    new URLSearchParams(location.search).has("billing"),
+  );
   const [confirmToken, setConfirmToken] = useState(() => {
     const t = new URLSearchParams(location.hash.slice(1)).get("confirm");
     if (t) history.replaceState(null, "", location.pathname);
@@ -212,6 +218,8 @@ export default function App() {
     }
   }
   if (location.pathname.startsWith("/embed/")) return <Embed />;
+  if (location.pathname === "/villkor") return <Legal kind="terms" />;
+  if (location.pathname === "/integritet") return <Legal kind="privacy" />;
   return (
     <>
       <header>
@@ -224,7 +232,8 @@ export default function App() {
         </a>
         <nav aria-label="Huvudmeny">
           <a href="#how">Så fungerar det</a>
-          <a href="#managed">Vi hjälper dig</a>
+          <a href="#price">Pris</a>
+          <a href="#managed">Hjälp</a>
         </nav>
       </header>
       {confirmToken ? (
@@ -251,7 +260,7 @@ export default function App() {
         />
       ) : (
         <main>
-          <section className="hero">
+          <section id="top" className="hero">
             <h1>
               Din hemsida.
               <br />
@@ -312,12 +321,37 @@ export default function App() {
               </p>
             </article>
           </section>
+          <section id="price" className="pricing" aria-labelledby="price-title">
+            <div>
+              <p className="eyebrow">Ett enkelt abonnemang</p>
+              <h2 id="price-title">Redo på din hemsida för 399 kr/månad.</h2>
+              <p>
+                Prova assistenten med din egen webbplats först. Betala när svaren
+                känns rätt och du vill publicera den för dina kunder.
+              </p>
+            </div>
+            <div className="price-card">
+              <p><strong>399 kr</strong><span>/månad per chatbot</span></p>
+              <ul>
+                <li><Check size={17} /> Komplett webbplatsindex</li>
+                <li><Check size={17} /> Källgrundade AI-svar</li>
+                <li><Check size={17} /> Enkel widget för din hemsida</li>
+                <li><Check size={17} /> Säg upp till periodens slut</li>
+              </ul>
+              <a className="button" href="#top" onClick={() => window.scrollTo({ top: 0 })}>
+                Prova med min hemsida <ArrowRight size={18} />
+              </a>
+              <small>Priset inkluderar moms där den är tillämplig.</small>
+            </div>
+          </section>
         </main>
       )}
       <Managed />
       <footer>
         <span>coastworks</span>
         <Access />
+        <a href="/villkor">Villkor</a>
+        <a href="/integritet">Integritet</a>
         <details>
           <summary>Om dina uppgifter</summary>
           <p>

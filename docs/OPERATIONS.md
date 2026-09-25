@@ -34,4 +34,4 @@ Cloudflare-kvoter gäller kontot och kan skilja sig från lokal renderingstakt. 
 4. Testa säkerhetskopiering/återställning, larm och ansvarig Managed-operatör.
 5. Färdigställ avsändardomän, företagets kontaktuppgifter, användarvillkor, integritetstext, personuppgiftsbiträdesavtal och leverantörernas databehandlingsregioner.
 
-Ingen automatisk betalning eller prenumerationsdebitering ingår. Erbjudandena skiljs genom leveransansvar och arbetsflöde, inte påhittade priser.
+Stripe-abonnemanget kostar 399 kr per månad och chatbot. Produktionskonfiguration, moms, webbportal och signerade händelser beskrivs i [BILLING.md](BILLING.md). Ingen livebetalning ska slås på innan den konfigurationen är verifierad.

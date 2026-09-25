@@ -6,12 +6,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiohttp
+import stripe
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 
+from app import billing
 from app.config import settings
 from app.core.crawl_target import CrawlTargetValidationError, validate_crawl_target
 from app.crawl import CrawlFailure, Fetcher
@@ -38,6 +40,8 @@ log = logging.getLogger("coastworks.api")
 @asynccontextmanager
 async def lifespan(app):
     await pool.open(wait=True)
+    if settings.BILLING_ENABLED:
+        await billing.validate_catalog()
     worker_task = None
     if settings.EMBEDDED_WORKER:
         from app.worker import run_loop
@@ -62,18 +66,19 @@ app = FastAPI(
 @app.middleware("http")
 async def boundaries(request: Request, call_next):
     request_id = str(uuid.uuid4())
+    body_limit = 262144 if request.url.path == "/api/billing/webhook" else 16000
     try:
         content_length = int(request.headers.get("content-length", "0") or 0)
     except ValueError:
         return JSONResponse({"detail": "Ogiltig begäran."}, status_code=400)
-    if content_length > 16000:
+    if content_length > body_limit:
         return JSONResponse({"detail": "För mycket innehåll."}, status_code=413)
     # Bound chunked request bodies as well, before JSON decoding.
     if request.method in {"POST", "PUT", "PATCH"}:
         body = bytearray()
         async for part in request.stream():
             body.extend(part)
-            if len(body) > 16000:
+            if len(body) > body_limit:
                 return JSONResponse({"detail": "För mycket innehåll."}, status_code=413)
         request._body = bytes(body)
     cors_origin = None
@@ -342,6 +347,7 @@ async def publish(bot_id: uuid.UUID, request: Request):
     async with transaction() as db:
         bot = await load_bot(db, bot_id)
         require_owner(request, bot)
+        await billing.require_paid(db, bot_id)
         await rate_limit(db, "publish:" + str(bot_id), 10, 3600)
     try:
         async with Fetcher() as fetcher:
@@ -362,6 +368,7 @@ async def publish(bot_id: uuid.UUID, request: Request):
             409, "Vi hittar inte koden på hemsidan ännu. Publicera ändringen och försök igen."
         )
     async with transaction() as db:
+        await billing.require_paid(db, bot_id)
         await db.execute(
             "UPDATE bots SET published=true WHERE id=%s AND active_version IS NOT NULL", (bot_id,)
         )
@@ -379,6 +386,7 @@ async def widget_session(bot_id: uuid.UUID, request: Request):
         bot = await load_bot(db, bot_id)
         if not bot["published"] or request.headers.get("origin") != bot["origin"]:
             raise HTTPException(403, "Chatten är inte tillgänglig här.")
+        await billing.require_paid(db, bot_id)
         await rate_limit(db, "widget:session:" + client_key(request), 40, 3600)
     return {"token": signer.dumps({"bot": str(bot_id), "session": secret()})}
 
@@ -390,6 +398,7 @@ async def widget_chat(bot_id: uuid.UUID, body: Question, request: Request):
         bot = await load_bot(db, bot_id)
         if not bot["published"]:
             raise HTTPException(403, "Chatten är inte tillgänglig just nu.")
+        await billing.require_paid(db, bot_id)
         await rate_limit(db, "widget:ip:" + client_key(request), 60, 3600)
         await rate_limit(db, "widget:bot:" + str(bot_id), 200, 86400)
         await rate_limit(db, "global:messages", settings.GLOBAL_MESSAGES_PER_DAY, 86400)
@@ -414,7 +423,52 @@ async def delete_bot(bot_id: uuid.UUID, request: Request):
     async with transaction() as db:
         bot = await load_bot(db, bot_id)
         require_owner(request, bot)
+        await billing.prepare_delete(db, bot_id)
         await db.execute("DELETE FROM bots WHERE id=%s", (bot_id,))
+
+
+@app.exception_handler(stripe.StripeError)
+async def stripe_error(request, exc):
+    log.warning("stripe_request_failed type=%s", type(exc).__name__)
+    return JSONResponse({"detail": "Betaltjänsten kunde inte nås. Försök igen om en stund."}, status_code=503)
+
+
+@app.exception_handler(billing.BillingContractError)
+async def billing_contract_error(request, exc):
+    log.error("billing_contract_failed code=%s", exc)
+    return JSONResponse({"detail": "Abonnemanget behöver kontrolleras. Kontakta oss för hjälp."}, status_code=503)
+
+
+@app.get("/api/bots/{bot_id}/billing")
+async def billing_status(bot_id: uuid.UUID, request: Request):
+    async with transaction() as db:
+        bot = await load_bot(db, bot_id)
+        require_owner(request, bot)
+    return await billing.status(bot_id)
+
+
+@app.post("/api/bots/{bot_id}/billing/{action}")
+async def billing_action(bot_id: uuid.UUID, action: str, request: Request):
+    require_first_party(request)
+    if action not in {"checkout", "portal", "refresh"}:
+        raise HTTPException(404, "Sidan finns inte.")
+    async with transaction() as db:
+        bot = await load_bot(db, bot_id)
+        require_owner(request, bot)
+        if not bot["active_version"]:
+            raise HTTPException(409, "Assistenten behöver bli klar först.")
+        await rate_limit(db, "billing:" + str(bot_id), 20, 3600)
+    if action == "checkout":
+        return await billing.checkout(bot)
+    if action == "portal":
+        return await billing.portal(bot_id)
+    return await billing.status(bot_id, refresh=True)
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    await billing.receive_event(await request.body(), request.headers.get("stripe-signature", ""))
+    return {"received": True}
 
 
 dist = Path("web/dist")

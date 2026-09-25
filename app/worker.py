@@ -201,11 +201,25 @@ async def maintenance():
         await db.execute("""INSERT INTO jobs(id,bot_id)
           SELECT gen_random_uuid(),b.id FROM bots b WHERE b.published AND (b.refreshed_at<now()-interval '7 days'
           OR coalesce(b.quality->>'ingestion_profile','preview')<>'full')
+          AND (NOT %s OR EXISTS(SELECT 1 FROM bot_billing p WHERE p.bot_id=b.id
+              AND p.status IN ('active','past_due') AND p.paid_until>now()))
           AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.bot_id=b.id AND j.created_at>now()-interval '1 day')
-          ON CONFLICT DO NOTHING""")
+          ON CONFLICT DO NOTHING""", (settings.BILLING_ENABLED,))
 
 
 async def run_loop():
+    from app.billing import run_loop as billing_loop
+
+    billing_task = asyncio.create_task(billing_loop())
+    try:
+        await crawl_loop()
+    finally:
+        billing_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await billing_task
+
+
+async def crawl_loop():
     logging.basicConfig(level=logging.INFO)
     while True:
         await maintenance()
