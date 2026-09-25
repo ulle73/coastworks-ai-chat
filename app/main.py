@@ -9,7 +9,7 @@ import aiohttp
 import stripe
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 
@@ -490,9 +490,20 @@ async def local_styles():
     return FileResponse("web/public/assets-local.css", media_type="text/css")
 
 
-@app.get("/")
 @app.get("/embed/{bot_id}")
-async def frontend(bot_id: uuid.UUID | None = None):
+async def embed_frontend(bot_id: uuid.UUID):
+    if not dist.exists():
+        raise HTTPException(503, "Gränssnittet behöver byggas först.")
+    return FileResponse(dist / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/")
+async def frontend_root(request: Request):
+    """Keep the API host from presenting a UI that its CSRF boundary must reject."""
+    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    canonical_origin = settings.APP_ORIGIN.rstrip("/")
+    if request_origin != canonical_origin:
+        return RedirectResponse(canonical_origin + "/", status_code=307)
     if not dist.exists():
         raise HTTPException(503, "Gränssnittet behöver byggas först.")
     return FileResponse(dist / "index.html", headers={"Cache-Control": "no-cache"})
