@@ -3,6 +3,10 @@
     {
       "source": "/api/:path*",
       "destination": "https://coastworks-ai-chat-api.onrender.com/api/:path*"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/index.html"
     }
   ]
 }
